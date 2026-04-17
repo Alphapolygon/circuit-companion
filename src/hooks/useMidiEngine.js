@@ -426,4 +426,17 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     sendParamValue,
     sendProgramChange,
     assignHardwareModSlot,
-    assign
+    assignHardwareMacroSlot,
+    syncHardwareModMatrix,
+    syncHardwareMacroMatrix,
+    pushAllParams,
+    invalidateRouteSync,
+    invalidateMacroRouteSync,
+    playPreviewNote,
+    playNote,
+    requestCurrentPatchDump,
+    sendPatchToHardware,
+    midiAvailable: Boolean(midiAccess),
+    error,
+  };
+}
