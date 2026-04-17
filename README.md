@@ -1,31 +1,28 @@
 # Circuit Companion
 
-This pass turns the mockup into a more functional React source package.
+A modern, premium WebMIDI editor and librarian for the Novation Circuit Tracks. Runs entirely in the browser with a dense, VST-plugin-style interface.
 
-## What changed
-- WebMIDI hook wired into parameter changes and MIDI CC input updates.
-- Real Circuit Tracks parameter registry added for the surfaced controls.
-- Drag-and-drop only appears on controls that are actual modulation destinations.
-- Patch save/load and project save/load added with localStorage plus JSON import/export.
-- Browser issues fixed:
-  - `React is not defined` fixed by adding the React Vite plugin and explicit React imports.
-  - `slider-vertical` deprecation fixed by using `writing-mode: vertical-lr` and `direction: rtl`.
-  - favicon 404 fixed by adding `favicon.svg`.
+## Features
 
-## Notes
-- This package focuses on the real-time CC-mapped controls surfaced in the UI.
-- Circuit Tracks supports deeper patch serialization and other parameters through the programmer reference guide, including patch dump and replace workflows.
-- Macro destination editing and the full dual-source modulation slot structure are not fully implemented yet.
-- Patch and project save/load in this pass are app-level state features, not native `.syx` or pack import/export.
+- **Hardware SysEx Librarian:** Deep two-way integration with the Circuit Tracks hardware. Fetch the active patch, bulk-sync all 64 patches directly from the device memory, or queue and burn custom patches back to hardware slots.
+- **Interactive Visualizers:** - **Faux-3D Oscillators:** Real-time animated wavetable displays that morph as you adjust Index, Density, and V-Sync.
+  - **Draggable Envelopes:** Edit ADSR curves directly by clicking and dragging nodes on the waveform screen (with automatic macro-offset compensation).
+  - **Spectral Filter:** Glowing filter curves with a dynamic resonance laser.
+- **Deep Modulation Matrix:** Full read/write access to the internal 20-slot Mod Matrix and the 32-slot Macro Matrix. Includes visual drag-and-drop routing from source chips to destination knobs.
+- **Real-Time WebMIDI:** Bidirectional CC and NRPN parameter sync. Turning a knob on the synth updates the UI instantly, and tweaking the UI updates the synth.
+- **Local Storage & State:** Save custom patches and full projects (including sequencer sketch data and step locks) to your browser's local storage, or import/export them as JSON backups.
 
-## Run
+## Tech Stack & Architecture
+
+- Built with **React** and **Vite**.
+- **WebMIDI API** handles all communication.
+- Custom SysEx parser strictly mapped to the Circuit Tracks 348-byte payload structure to accurately decode patch names, parameter states, and matrix routings.
+- No backend required—runs entirely client-side.
+
+## Local Development
+
+To run this project locally:
+
 ```bash
 npm install
 npm run dev
-```
-
-
-## Hardware sync notes
-- CC-backed and NRPN-backed surfaced controls now transmit to Circuit Tracks.
-- The hardware modulation matrix is synced through the official 12-slot NRPN table.
-- Macro destination editing is still separate work and is not yet implemented.
