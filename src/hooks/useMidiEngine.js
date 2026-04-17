@@ -7,12 +7,7 @@ function createModSlotNrpn(count = 20) {
   return Array.from({ length: count }, (_, index) => {
     const base = start + index * 5;
     const pair = (offset) => [Math.floor((base + offset) / 128), (base + offset) % 128];
-    return {
-      source1: pair(0),
-      source2: pair(1),
-      depth: pair(3),
-      destination: pair(4),
-    };
+    return { source1: pair(0), source2: pair(1), depth: pair(3), destination: pair(4) };
   });
 }
 
@@ -21,28 +16,17 @@ function createMacroSlotNrpn(count = 32) {
   return Array.from({ length: count }, (_, index) => {
     const base = start + index * 4;
     const pair = (offset) => [Math.floor((base + offset) / 128), (base + offset) % 128];
-    return {
-      destination: pair(0),
-      start: pair(1),
-      end: pair(2),
-      depth: pair(3),
-    };
+    return { destination: pair(0), start: pair(1), end: pair(2), depth: pair(3) };
   });
 }
 
 const MOD_SLOT_NRPN = createModSlotNrpn(20);
 const MACRO_SLOT_NRPN = createMacroSlotNrpn(32);
-
-// EXACT LENGTH FROM THE CSV
 const PATCH_DATA_LENGTH = 348;
 
 function decodePatchName(bytes = []) {
   const [start, end] = PATCH_NAME_RANGE;
-  return bytes
-    .slice(start, end)
-    .map((v) => (v >= 32 && v <= 126 ? String.fromCharCode(v) : ''))
-    .join('')
-    .trim();
+  return bytes.slice(start, end).map((v) => (v >= 32 && v <= 126 ? String.fromCharCode(v) : '')).join('').trim();
 }
 
 function encodePatchName(bytes, name = '') {
@@ -59,7 +43,6 @@ function parsePatchDump(message, paramsMeta) {
   const header = bytes.slice(1, 6);
   if (header.join(',') !== NOVATION_SYSEX_HEADER.join(',')) return null;
 
-  // The true patch data payload begins after the 8-byte SysEx header block
   const patchData = bytes.slice(8, -1);
   const params = {};
   
@@ -69,36 +52,30 @@ function parsePatchDump(message, paramsMeta) {
     }
   });
 
-  // Mod Matrix: 20 slots, EXACTLY 4 bytes per slot, starting at offset 116
   const routes = [];
   for (let i = 0; i < 20; i += 1) {
     const offset = 116 + i * 4;
     const source1 = patchData[offset];
-    const source2 = patchData[offset + 1];
     const depth = patchData[offset + 2];
     const destination = patchData[offset + 3];
     if (!source1 || !destination) continue;
     routes.push({ slot: i, source: source1, depth, destination });
   }
 
-  // Macro Matrix: 8 Macros, EXACTLY 17 bytes per block, starting at offset 196
   const macroRoutes = [];
   for (let macroIndex = 0; macroIndex < 8; macroIndex += 1) {
     const baseOffset = 196 + macroIndex * 17;
-    // Skip the macro "position" byte, read the 4 targets inside the block
     for (let slot = 0; slot < 4; slot += 1) {
       const offset = baseOffset + 1 + slot * 4;
       const destination = patchData[offset];
       if (!destination) continue;
-      const start = patchData[offset + 1];
-      const end = patchData[offset + 2];
-      const depth = patchData[offset + 3];
-      macroRoutes.push({ slot: macroIndex * 4 + slot, destination, start, end, depth });
+      macroRoutes.push({ slot: macroIndex * 4 + slot, destination, start: patchData[offset + 1], end: patchData[offset + 2], depth: patchData[offset + 3] });
     }
   }
 
   return {
     raw: bytes,
+    rawPayload: patchData, // We expose the raw 348 bytes so we can use them as a foundation!
     patchName: decodePatchName(patchData),
     params,
     hardwareRoutes: routes,
@@ -106,8 +83,20 @@ function parsePatchDump(message, paramsMeta) {
   };
 }
 
-function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = '', paramsMeta, hardwareSourceMap, macroSourceMap }) {
-  const patchData = new Array(PATCH_DATA_LENGTH).fill(0);
+// Accepts a basePayload to ensure hidden params (like Volume) are preserved
+function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = '', paramsMeta, hardwareSourceMap, macroSourceMap, basePayload }) {
+  const patchData = basePayload ? [...basePayload] : new Array(PATCH_DATA_LENGTH).fill(0);
+
+  if (!basePayload) {
+    patchData[1] = 127;
+    patchData[2] = 127;
+  } else {
+    // CRITICAL: We surgically wipe the old matrices so ghost routes don't bleed through
+    for (let i = 116; i < 196; i++) patchData[i] = 0; // Wipe Mod Matrix
+    for (let m = 0; m < 8; m++) {
+      for (let b = 1; b < 17; b++) patchData[196 + m * 17 + b] = 0; // Wipe Macro Targets
+    }
+  }
 
   Object.entries(PATCH_BYTE_MAP).forEach(([paramId, byteIndex]) => {
     if (byteIndex >= 0 && byteIndex < patchData.length) {
@@ -115,8 +104,7 @@ function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = 
     }
   });
 
-  routes
-    .filter((route) => Number.isInteger(hardwareSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.modDestination))
+  routes.filter((route) => Number.isInteger(hardwareSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.modDestination))
     .slice(0, 20)
     .forEach((route, index) => {
       const offset = 116 + index * 4;
@@ -127,21 +115,17 @@ function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = 
     });
 
   const slottedMacroRoutes = Array.from({ length: 32 }, () => null);
-  macroRoutes
-    .filter((route) => Number.isInteger(macroSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination))
+  macroRoutes.filter((route) => Number.isInteger(macroSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination))
     .slice(0, 32)
     .forEach((route) => {
       const macroIndex = macroSourceMap[route.sourceId];
-      const baseIndex = macroIndex * 4;
-      const slotOffset = slottedMacroRoutes.slice(baseIndex, baseIndex + 4).filter(Boolean).length;
-      if (slotOffset < 4) slottedMacroRoutes[baseIndex + slotOffset] = route;
+      const slotOffset = slottedMacroRoutes.slice(macroIndex * 4, macroIndex * 4 + 4).filter(Boolean).length;
+      if (slotOffset < 4) slottedMacroRoutes[macroIndex * 4 + slotOffset] = route;
     });
 
   slottedMacroRoutes.forEach((route, index) => {
     if (!route) return;
-    const macroIndex = Math.floor(index / 4);
-    const slot = index % 4;
-    const offset = 196 + macroIndex * 17 + 1 + slot * 4;
+    const offset = 196 + Math.floor(index / 4) * 17 + 1 + (index % 4) * 4;
     patchData[offset] = clamp7(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0);
     patchData[offset + 1] = clamp7(route.start ?? 0);
     patchData[offset + 2] = clamp7(route.end ?? 127);
@@ -399,7 +383,7 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     });
   }, [getOutput, synthChannel]);
 
-  const sendPatchToHardware = useCallback(({ params = {}, routes = [], macroRoutes = [], patchName = '', program = null } = {}) => {
+  const sendPatchToHardware = useCallback(({ params = {}, routes = [], macroRoutes = [], patchName = '', program = null, basePayload = null } = {}) => {
     const output = getOutput();
     if (!output) return Promise.reject(new Error('No MIDI output selected.'));
 
@@ -412,17 +396,18 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
         paramsMeta,
         hardwareSourceMap,
         macroSourceMap,
+        basePayload
       });
 
       const sendPayload = () => {
-        const sysex = [0xf0, ...NOVATION_SYSEX_HEADER, 0x01, synthChannel, ...payload.map(clamp7), 0xf7];
+        const sysex = [0xf0, ...NOVATION_SYSEX_HEADER, 0x00, synthChannel, ...payload.map(clamp7), 0xf7];
         output.send(sysex);
         resolve({ ok: true, bytes: payload.length, program });
       };
 
       if (Number.isInteger(program)) {
         output.send([0xc0 + synthChannel, clamp7(program)]);
-        window.setTimeout(sendPayload, 120);
+        window.setTimeout(sendPayload, 150);
       } else {
         sendPayload();
       }
@@ -441,17 +426,4 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     sendParamValue,
     sendProgramChange,
     assignHardwareModSlot,
-    assignHardwareMacroSlot,
-    syncHardwareModMatrix,
-    syncHardwareMacroMatrix,
-    pushAllParams,
-    invalidateRouteSync,
-    invalidateMacroRouteSync,
-    playPreviewNote,
-    playNote,
-    requestCurrentPatchDump,
-    sendPatchToHardware,
-    midiAvailable: Boolean(midiAccess),
-    error,
-  };
-}
+    assign
