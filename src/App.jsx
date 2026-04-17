@@ -178,7 +178,6 @@ export default function App() {
     const patch = patches.find((entry) => entry.id === patchId);
     if (!patch) return;
 
-    // Check if the loaded patch is a hardware slot. If so, send Program Change and DO NOT blast CCs.
     const isHardware = Number.isInteger(patch.program);
     if (isHardware && midi.sendProgramChange) {
       midi.sendProgramChange(patch.program);
@@ -246,16 +245,19 @@ export default function App() {
   };
 
   const burnPatchToHardware = useCallback(async () => {
-    setHardwarePatchStatus(`Burning current state to hardware slot ${hardwareSaveSlot}…`);
+    setHardwarePatchStatus(`Capturing active state & Queueing to slot ${hardwareSaveSlot}…`);
     try {
+      const dump = await midi.requestCurrentPatchDump();
+      
       await midi.sendPatchToHardware({
         params,
         routes: mod.routes,
         macroRoutes: macroMod.routes,
         patchName,
         program: hardwareSaveSlot - 1,
+        basePayload: dump.rawPayload
       });
-      setHardwarePatchStatus(`Burned ${patchName || 'current patch'} to hardware slot ${hardwareSaveSlot}.`);
+      setHardwarePatchStatus(`Queued ${patchName || 'current patch'} to slot ${hardwareSaveSlot}. Press SAVE on device!`);
     } catch (err) {
       setHardwarePatchStatus(err.message || 'Hardware burn failed.');
     }
@@ -276,7 +278,6 @@ export default function App() {
     }
   }, [applyPatchState, midi]);
 
-  // Bulk Sync with safety checks, timeout aborts, and program assignment
   const syncAllHardwarePatches = useCallback(async () => {
     if (!midi.selectedOutputId || !midi.selectedInputId) {
       setHardwarePatchStatus('Error: Both MIDI Out and MIDI In must be selected!');
@@ -302,7 +303,7 @@ export default function App() {
           params: nextParams,
           routes: nextRoutes,
           macroRoutes: nextMacroRoutes,
-          program: i, // Tells the app this is a real hardware slot
+          program: i,
         });
 
         await new Promise(resolve => setTimeout(resolve, 50));
