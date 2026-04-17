@@ -677,3 +677,93 @@ input, select { background: #0f1521; color: var(--text); border: 1px solid rgba(
   background: #596576;
   box-shadow: none;
 }
+
+/* --- LAYOUT PROPORTIONS (SHRINKS BOTTOM ROW) --- */
+.serum-top-row {
+  flex: 1.4; /* Give top half 60% of the space */
+}
+.serum-bottom-row {
+  flex: 0.6; /* Shrink bottom half to 40% */
+}
+.dense-panel .wave-screen {
+  min-height: 44px; /* Allows screens in the bottom row to compress */
+}
+
+/* --- ACTIVE DROP HIGHLIGHTS --- */
+/* Permanent glow when user is dragging a source */
+.control-shell.drop-ready, .fader-shell.drop-ready {
+  border-color: rgba(45, 200, 255, 0.4);
+  background: linear-gradient(180deg, rgba(22, 35, 52, 0.95), rgba(12, 18, 28, 0.95));
+  box-shadow: inset 0 0 0 1px rgba(45, 200, 255, 0.1), 0 0 12px rgba(45, 200, 255, 0.05);
+}
+/* Stronger glow when hovering directly over the target */
+.control-shell.drop-ready:hover, .fader-shell.drop-ready:hover {
+  border-color: rgba(45, 200, 255, 0.8);
+  background: linear-gradient(180deg, rgba(28, 44, 66, 0.95), rgba(15, 23, 36, 0.95));
+  box-shadow: inset 0 0 0 1px rgba(45, 200, 255, 0.25), 0 0 16px rgba(45, 200, 255, 0.15);
+  cursor: crosshair;
+}
+
+/* --- INTERACTIVE ENVELOPE HANDLES --- */
+.env-handle {
+  fill: transparent;
+  cursor: grab;
+  transition: fill 0.15s ease;
+}
+.env-handle:hover, .env-handle.active {
+  fill: rgba(255, 255, 255, 0.12);
+}
+.env-handle:active {
+  cursor: grabbing;
+}
+.env-handle-dot {
+  fill: currentColor;
+}
+.wave-screen.dragging {
+  cursor: grabbing;
+}
+
+/* --- NEW: 3D WAVETABLE & SPECTRAL FILTER --- */
+.osc-layer {
+  fill: rgba(14, 22, 32, 0.95); /* Matches the dark screen background to block out rear lines */
+  stroke: currentColor;
+}
+.osc-layer.front {
+  fill: rgba(45, 200, 255, 0.06); /* Very subtle tint for the front layer */
+  filter: drop-shadow(0 0 12px rgba(45, 200, 255, 0.25));
+}
+.wave-screen.purple .osc-layer.front {
+  fill: rgba(141, 125, 255, 0.06);
+  filter: drop-shadow(0 0 12px rgba(141, 125, 255, 0.25));
+}
+
+.filter-fill {
+  mix-blend-mode: screen;
+}
+.filter-laser {
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-dasharray: 4 6;
+  filter: drop-shadow(0 0 8px currentColor);
+}
+
+/* --- FLEXIBLE WAVEFORM SCREENS & OVERLAYS --- */
+.wave-screen {
+  flex: 1; /* Pushes the screen to fill all empty vertical space */
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 80px;
+  overflow: visible !important; /* Allows the custom dropdown menu to escape boundaries */
+}
+.wave-svg {
+  flex: 1; /* SVG takes up all the newly created space */
+  width: 100%;
+  height: 100%; /* Overrides the old fixed 72px height */
+}
+.osc-dropdown-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
