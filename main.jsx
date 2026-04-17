@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { clamp7 } from '../utils/app.js';
-import { MACRO_SECTION_COUNT, MACRO_SECTION_OFFSET, MACRO_SECTION_STRIDE, MACRO_TARGET_STRIDE, MACRO_TARGETS_PER_SECTION, MOD_MATRIX_OFFSET, MOD_MATRIX_SLOTS, MOD_MATRIX_STRIDE, NOVATION_SYSEX_HEADER, PATCH_BYTE_MAP, PATCH_DATA_LENGTH, PATCH_NAME_RANGE } from '../data/circuitTracks.js';
+import { MACRO_SECTION_COUNT, MACRO_SECTION_OFFSET, MACRO_SECTION_STRIDE, MACRO_TARGET_STRIDE, MACRO_TARGETS_PER_SECTION, MOD_MATRIX_OFFSET, MOD_MATRIX_SLOTS, MOD_MATRIX_STRIDE, NOVATION_SYSEX_HEADER, PATCH_BYTE_MAP, PATCH_CATEGORY_INDEX, PATCH_DATA_LENGTH, PATCH_GENRE_INDEX, PATCH_NAME_RANGE } from '../data/circuitTracks.js';
 
 function createModSlotNrpn(count = 20) {
   const start = 211;
@@ -36,6 +36,18 @@ function encodePatchName(bytes, name = '') {
   }
 }
 
+function decodePatchMeta(bytes = []) {
+  return {
+    patchCategory: Number.isInteger(bytes[PATCH_CATEGORY_INDEX]) ? clamp7(bytes[PATCH_CATEGORY_INDEX]) : 0,
+    patchGenre: Number.isInteger(bytes[PATCH_GENRE_INDEX]) ? clamp7(bytes[PATCH_GENRE_INDEX]) : 0,
+  };
+}
+
+function encodePatchMeta(bytes, { patchCategory = null, patchGenre = null } = {}) {
+  if (Number.isInteger(patchCategory)) bytes[PATCH_CATEGORY_INDEX] = clamp7(patchCategory);
+  if (Number.isInteger(patchGenre)) bytes[PATCH_GENRE_INDEX] = clamp7(patchGenre);
+}
+
 export function parsePatchDump(message, paramsMeta) {
   const bytes = Array.from(message);
   if (bytes[0] !== 0xf0 || bytes[bytes.length - 1] !== 0xf7) return null;
@@ -60,10 +72,11 @@ export function parsePatchDump(message, paramsMeta) {
   for (let i = 0; i < MOD_MATRIX_SLOTS; i += 1) {
     const offset = MOD_MATRIX_OFFSET + i * MOD_MATRIX_STRIDE;
     const source1 = patchData[offset];
+    const source2 = patchData[offset + 1];
     const depth = patchData[offset + 2];
     const destination = patchData[offset + 3];
-    if (!source1 || !destination) continue;
-    routes.push({ slot: i, source: source1, depth, destination });
+    if (!destination || (!source1 && !source2)) continue;
+    routes.push({ slot: i, source1, source2, depth, destination });
   }
 
   const macroRoutes = [];
@@ -83,30 +96,90 @@ export function parsePatchDump(message, paramsMeta) {
     }
   }
 
+  const meta = decodePatchMeta(patchData);
+
   return {
     raw: bytes,
     command,
     location,
     rawPayload: patchData,
     patchName: decodePatchName(patchData),
+    ...meta,
     params,
     hardwareRoutes: routes,
     hardwareMacroRoutes: macroRoutes,
   };
 }
 
-export function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = '', paramsMeta, hardwareSourceMap, macroSourceMap, basePayload }) {
+function clearRoutingSections(patchData) {
+  for (let i = MOD_MATRIX_OFFSET; i < MACRO_SECTION_OFFSET; i += 1) patchData[i] = 0;
+  for (let macroIndex = 0; macroIndex < MACRO_SECTION_COUNT; macroIndex += 1) {
+    const sectionStart = MACRO_SECTION_OFFSET + macroIndex * MACRO_SECTION_STRIDE;
+    for (let i = 1; i < MACRO_SECTION_STRIDE; i += 1) patchData[sectionStart + i] = 0;
+  }
+}
+
+function placePreferredRoute(assignments, preferredSlot, route) {
+  if (Number.isInteger(preferredSlot) && preferredSlot >= 0 && preferredSlot < assignments.length && !assignments[preferredSlot]) {
+    assignments[preferredSlot] = route;
+    return true;
+  }
+  const firstFreeSlot = assignments.findIndex((entry) => entry === null);
+  if (firstFreeSlot === -1) return false;
+  assignments[firstFreeSlot] = { ...route, slot: firstFreeSlot };
+  return true;
+}
+
+function writeModAssignments(patchData, assignments) {
+  assignments.forEach((route, slot) => {
+    if (!route) return;
+    const offset = MOD_MATRIX_OFFSET + slot * MOD_MATRIX_STRIDE;
+    patchData[offset] = clamp7(route.source1 ?? 0);
+    patchData[offset + 1] = clamp7(route.source2 ?? 0);
+    patchData[offset + 2] = clamp7(route.depth ?? 64);
+    patchData[offset + 3] = clamp7(route.destination ?? 0);
+  });
+}
+
+function findFirstFreeMacroSlot(assignments, macroIndex) {
+  const start = macroIndex * MACRO_TARGETS_PER_SECTION;
+  const end = start + MACRO_TARGETS_PER_SECTION;
+  for (let slot = start; slot < end; slot += 1) {
+    if (!assignments[slot]) return slot;
+  }
+  return -1;
+}
+
+function writeMacroAssignments(patchData, assignments) {
+  assignments.forEach((route, slot) => {
+    if (!route) return;
+    const offset = MACRO_SECTION_OFFSET + Math.floor(slot / MACRO_TARGETS_PER_SECTION) * MACRO_SECTION_STRIDE + 1 + (slot % MACRO_TARGETS_PER_SECTION) * MACRO_TARGET_STRIDE;
+    patchData[offset] = clamp7(route.destination ?? 0);
+    patchData[offset + 1] = clamp7(route.start ?? 0);
+    patchData[offset + 2] = clamp7(route.end ?? 127);
+    patchData[offset + 3] = clamp7(route.depth ?? 64);
+  });
+}
+
+export function buildPatchPayload({
+  params,
+  routes = [],
+  macroRoutes = [],
+  patchName = '',
+  paramsMeta,
+  hardwareSourceMap,
+  macroSourceMap,
+  basePayload,
+  preservedHardwareRoutes = [],
+  preservedHardwareMacroRoutes = [],
+  patchCategory = null,
+  patchGenre = null,
+}) {
   const patchData = Array.isArray(basePayload) && basePayload.length === PATCH_DATA_LENGTH
     ? [...basePayload]
     : new Array(PATCH_DATA_LENGTH).fill(0);
 
-  if (Array.isArray(basePayload) && basePayload.length === PATCH_DATA_LENGTH) {
-    for (let i = MOD_MATRIX_OFFSET; i < MACRO_SECTION_OFFSET; i += 1) patchData[i] = 0;
-    for (let macroIndex = 0; macroIndex < MACRO_SECTION_COUNT; macroIndex += 1) {
-      const sectionStart = MACRO_SECTION_OFFSET + macroIndex * MACRO_SECTION_STRIDE;
-      for (let i = 1; i < MACRO_SECTION_STRIDE; i += 1) patchData[sectionStart + i] = 0;
-    }
-  }
+  clearRoutingSections(patchData);
 
   Object.entries(PATCH_BYTE_MAP).forEach(([paramId, byteIndex]) => {
     if (byteIndex >= 0 && byteIndex < patchData.length) {
@@ -114,43 +187,93 @@ export function buildPatchPayload({ params, routes = [], macroRoutes = [], patch
     }
   });
 
-  routes
-    .filter((route) => Number.isInteger(hardwareSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.modDestination))
-    .slice(0, MOD_MATRIX_SLOTS)
-    .forEach((route, index) => {
-      const offset = MOD_MATRIX_OFFSET + index * MOD_MATRIX_STRIDE;
-      patchData[offset] = clamp7(hardwareSourceMap[route.sourceId]);
-      patchData[offset + 1] = 0;
-      patchData[offset + 2] = clamp7(route.amount ?? 64);
-      patchData[offset + 3] = clamp7(paramsMeta[route.targetId]?.modDestination ?? 0);
-    });
-
-  const slottedMacroRoutes = Array.from({ length: MACRO_SECTION_COUNT * MACRO_TARGETS_PER_SECTION }, () => null);
-  macroRoutes
-    .filter((route) => Number.isInteger(macroSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination))
-    .slice(0, slottedMacroRoutes.length)
+  const modAssignments = Array.from({ length: MOD_MATRIX_SLOTS }, () => null);
+  preservedHardwareRoutes
+    .filter((route) => Number.isInteger(route?.slot) && route.slot >= 0 && route.slot < MOD_MATRIX_SLOTS)
     .forEach((route) => {
-      const macroIndex = macroSourceMap[route.sourceId];
-      const slotOffset = slottedMacroRoutes.slice(macroIndex * MACRO_TARGETS_PER_SECTION, macroIndex * MACRO_TARGETS_PER_SECTION + MACRO_TARGETS_PER_SECTION).filter(Boolean).length;
-      if (slotOffset < MACRO_TARGETS_PER_SECTION) {
-        slottedMacroRoutes[macroIndex * MACRO_TARGETS_PER_SECTION + slotOffset] = route;
+      if (!modAssignments[route.slot]) {
+        modAssignments[route.slot] = {
+          slot: route.slot,
+          source1: clamp7(route.source1 ?? 0),
+          source2: clamp7(route.source2 ?? 0),
+          depth: clamp7(route.depth ?? 64),
+          destination: clamp7(route.destination ?? 0),
+        };
       }
     });
 
-  slottedMacroRoutes.forEach((route, index) => {
-    if (!route) return;
-    const offset = MACRO_SECTION_OFFSET + Math.floor(index / MACRO_TARGETS_PER_SECTION) * MACRO_SECTION_STRIDE + 1 + (index % MACRO_TARGETS_PER_SECTION) * MACRO_TARGET_STRIDE;
-    patchData[offset] = clamp7(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0);
-    patchData[offset + 1] = clamp7(route.start ?? 0);
-    patchData[offset + 2] = clamp7(route.end ?? 127);
-    patchData[offset + 3] = clamp7(route.depth ?? 64);
-  });
+  routes
+    .filter((route) => Number.isInteger(hardwareSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.modDestination))
+    .slice(0, MOD_MATRIX_SLOTS)
+    .forEach((route) => {
+      placePreferredRoute(modAssignments, route.hardwareSlot, {
+        source1: clamp7(hardwareSourceMap[route.sourceId]),
+        source2: 0,
+        depth: clamp7(route.amount ?? 64),
+        destination: clamp7(paramsMeta[route.targetId]?.modDestination ?? 0),
+      });
+    });
+  writeModAssignments(patchData, modAssignments);
+
+  const macroAssignments = Array.from({ length: MACRO_SECTION_COUNT * MACRO_TARGETS_PER_SECTION }, () => null);
+  preservedHardwareMacroRoutes
+    .filter((route) => Number.isInteger(route?.slot) && route.slot >= 0 && route.slot < macroAssignments.length)
+    .forEach((route) => {
+      if (!macroAssignments[route.slot]) {
+        macroAssignments[route.slot] = {
+          slot: route.slot,
+          destination: clamp7(route.destination ?? 0),
+          start: clamp7(route.start ?? 0),
+          end: clamp7(route.end ?? 127),
+          depth: clamp7(route.depth ?? 64),
+        };
+      }
+    });
+
+  macroRoutes
+    .filter((route) => Number.isInteger(macroSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination))
+    .slice(0, macroAssignments.length)
+    .forEach((route) => {
+      const macroIndex = macroSourceMap[route.sourceId];
+      if (!Number.isInteger(macroIndex) || macroIndex < 0 || macroIndex >= MACRO_SECTION_COUNT) return;
+      const preferredSlot = Number.isInteger(route.hardwareSlot)
+        && route.hardwareSlot >= macroIndex * MACRO_TARGETS_PER_SECTION
+        && route.hardwareSlot < (macroIndex + 1) * MACRO_TARGETS_PER_SECTION
+        && !macroAssignments[route.hardwareSlot]
+        ? route.hardwareSlot
+        : findFirstFreeMacroSlot(macroAssignments, macroIndex);
+      if (preferredSlot === -1) return;
+      macroAssignments[preferredSlot] = {
+        slot: preferredSlot,
+        destination: clamp7(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0),
+        start: clamp7(route.start ?? 0),
+        end: clamp7(route.end ?? 127),
+        depth: clamp7(route.depth ?? 64),
+      };
+    });
+  writeMacroAssignments(patchData, macroAssignments);
 
   encodePatchName(patchData, patchName);
+  encodePatchMeta(patchData, { patchCategory, patchGenre });
   return patchData;
 }
 
-export function buildPatchSysexMessage({ params = {}, routes = [], macroRoutes = [], patchName = '', paramsMeta, hardwareSourceMap, macroSourceMap, basePayload = null, command = 0x00, location = 0x00 } = {}) {
+export function buildPatchSysexMessage({
+  params = {},
+  routes = [],
+  macroRoutes = [],
+  patchName = '',
+  paramsMeta,
+  hardwareSourceMap,
+  macroSourceMap,
+  basePayload = null,
+  preservedHardwareRoutes = [],
+  preservedHardwareMacroRoutes = [],
+  patchCategory = null,
+  patchGenre = null,
+  command = 0x00,
+  location = 0x00,
+} = {}) {
   const payload = buildPatchPayload({
     params,
     routes,
@@ -160,6 +283,10 @@ export function buildPatchSysexMessage({ params = {}, routes = [], macroRoutes =
     hardwareSourceMap,
     macroSourceMap,
     basePayload,
+    preservedHardwareRoutes,
+    preservedHardwareMacroRoutes,
+    patchCategory,
+    patchGenre,
   });
 
   return [0xf0, ...NOVATION_SYSEX_HEADER, clamp7(command), clamp7(location), 0x00, ...payload.map(clamp7), 0xf7];
@@ -412,7 +539,7 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     });
   }, [getOutput, synthChannel]);
 
-  const sendPatchToHardware = useCallback(({ params = {}, routes = [], macroRoutes = [], patchName = '', program = null, basePayload = null } = {}) => {
+  const sendPatchToHardware = useCallback(({ params = {}, routes = [], macroRoutes = [], patchName = '', program = null, basePayload = null, preservedHardwareRoutes = [], preservedHardwareMacroRoutes = [], patchCategory = null, patchGenre = null } = {}) => {
     const output = getOutput();
     if (!output) return Promise.reject(new Error('No MIDI output selected.'));
 
@@ -429,6 +556,10 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
           hardwareSourceMap,
           macroSourceMap,
           basePayload,
+          preservedHardwareRoutes,
+          preservedHardwareMacroRoutes,
+          patchCategory,
+          patchGenre,
           command,
           location,
         });

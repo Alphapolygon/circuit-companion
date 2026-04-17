@@ -4,6 +4,8 @@ import Panel from '../ui/Panel.jsx';
 export default function PatchTab({
   patchName,
   setPatchName,
+  patchCategory,
+  patchGenre,
   projectName,
   setProjectName,
   patches,
@@ -55,6 +57,11 @@ export default function PatchTab({
           <button className="hero-button" onClick={savePatch}>Save Locally</button>
         </div>
 
+        <div className="info-card" style={{marginBottom: '10px'}}>
+          <strong>Current Patch Meta</strong>
+          <span>Name: {patchName || 'Untitled'} · Category ID: {Number.isInteger(patchCategory) ? patchCategory : 0} · Genre ID: {Number.isInteger(patchGenre) ? patchGenre : 0}</span>
+        </div>
+
         {hardwarePatchStatus ? <div className="info-card" style={{marginBottom: '10px'}}><strong>Hardware Status</strong><span style={{color: '#63f08a'}}>{hardwarePatchStatus}</span></div> : null}
         
         {/* PATCH BROWSER */}
@@ -63,7 +70,7 @@ export default function PatchTab({
             <div key={patch.id} className="browser-row compact-browser-row">
               <button className="browser-main" onClick={() => loadPatch(patch.id)}>
                 <strong>{patch.name}</strong>
-                <span>{patch.author || 'User Patch'}</span>
+                <span>{patch.author || 'User Patch'}{Number.isInteger(patch.patchCategory) || Number.isInteger(patch.patchGenre) ? ` · Cat ${patch.patchCategory ?? 0} · Genre ${patch.patchGenre ?? 0}` : ''}</span>
               </button>
               <div className="browser-actions">
                 <span className="tag">Load</span>

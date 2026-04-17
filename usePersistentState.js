@@ -370,6 +370,8 @@ export const PROJECT_STORAGE_KEY = 'circuit-companion-projects-v15';
 // Circuit Tracks single-patch payload layout from the official programmer reference.
 export const PATCH_DATA_LENGTH = 340;
 export const PATCH_NAME_RANGE = [0, 16];
+export const PATCH_CATEGORY_INDEX = 16;
+export const PATCH_GENRE_INDEX = 17;
 export const MOD_MATRIX_OFFSET = 124;
 export const MOD_MATRIX_SLOTS = 20;
 export const MOD_MATRIX_STRIDE = 4;
