@@ -1,9 +1,52 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import Panel from '../ui/Panel.jsx';
+
+// --- NEW: THE 64-PAD SLOT SELECTOR MODAL ---
+function BurnModal({ onClose, onConfirm, hardwareSaveSlot, setHardwareSaveSlot }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card burn-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="panel-header">
+          <h3>Send Patch to Circuit Tracks</h3>
+          <button className="danger-button mini-danger" onClick={onClose}>×</button>
+        </div>
+        <div className="info-card" style={{ marginBottom: '14px' }}>
+          <strong>Select target slot (1-64)</strong>
+          <span>This will replace the patch in the synth's active edit buffer for the chosen slot. Remember to press Save on the hardware to keep it permanently!</span>
+        </div>
+        
+        <div className="slot-chip-grid">
+          {Array.from({ length: 64 }, (_, i) => (
+            <button
+              key={i + 1}
+              className={`slot-chip ${hardwareSaveSlot === i + 1 ? 'active' : ''}`}
+              onClick={() => setHardwareSaveSlot(i + 1)}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
+
+        <div className="toolbar-row compact-toolbar-row" style={{ justifyContent: 'flex-end' }}>
+          <button className="hero-button ghost" onClick={onClose}>Cancel</button>
+          <button 
+            className="hero-button" 
+            onClick={() => { onConfirm(); onClose(); }} 
+            style={{ background: '#2a1317', color: '#ff8da0', border: '1px solid rgba(255,141,160,0.3)' }}
+          >
+            Send to Slot {hardwareSaveSlot}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function PatchTab({
   patchName,
   setPatchName,
+  patchCategory,
+  patchGenre,
   projectName,
   setProjectName,
   patches,
@@ -16,6 +59,8 @@ export default function PatchTab({
   deleteProject,
   exportState,
   importState,
+  exportPatchSysex,
+  importPatchSysex,
   fetchPatchFromHardware,
   syncAllHardwarePatches,
   burnPatchToHardware,
@@ -24,6 +69,8 @@ export default function PatchTab({
   setHardwareSaveSlot,
 }) {
   const fileRef = useRef(null);
+  const sysexFileRef = useRef(null);
+  const [isBurnModalOpen, setIsBurnModalOpen] = useState(false); // NEW MODAL STATE
 
   return (
     <div className="tab-layout serum-tab-grid patch-serum-grid">
@@ -36,20 +83,25 @@ export default function PatchTab({
             Sync All 64 from Device
           </button>
           <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)', margin: '0 8px' }} />
-          <label className="inline-select compact-select">
-            <span>Burn To</span>
-            <select value={hardwareSaveSlot} onChange={(event) => setHardwareSaveSlot(Number(event.target.value))}>
-              {Array.from({ length: 64 }, (_, index) => (
-                <option key={index + 1} value={index + 1}>Slot {index + 1}</option>
-              ))}
-            </select>
-          </label>
-          <button className="hero-button" onClick={burnPatchToHardware} style={{ background: '#2a1317', color: '#ff8da0', border: '1px solid rgba(255,141,160,0.3)' }}>Burn</button>
+          
+          {/* REPLACED THE DROPDOWN WITH THE MODAL TRIGGER */}
+          <button 
+            className="hero-button" 
+            onClick={() => setIsBurnModalOpen(true)} 
+            style={{ background: '#2a1317', color: '#ff8da0', border: '1px solid rgba(255,141,160,0.3)' }}
+          >
+            Send to Device...
+          </button>
         </div>
 
         <div className="toolbar-row compact-toolbar-row serum-toolbar-grid">
           <input className="text-input" value={patchName} onChange={(event) => setPatchName(event.target.value)} placeholder="Patch name" />
           <button className="hero-button" onClick={savePatch}>Save Locally</button>
+        </div>
+
+        <div className="info-card" style={{marginBottom: '10px'}}>
+          <strong>Current Patch Meta</strong>
+          <span>Name: {patchName || 'Untitled'} · Category ID: {Number.isInteger(patchCategory) ? patchCategory : 0} · Genre ID: {Number.isInteger(patchGenre) ? patchGenre : 0}</span>
         </div>
 
         {hardwarePatchStatus ? <div className="info-card" style={{marginBottom: '10px'}}><strong>Hardware Status</strong><span style={{color: '#63f08a'}}>{hardwarePatchStatus}</span></div> : null}
@@ -60,7 +112,7 @@ export default function PatchTab({
             <div key={patch.id} className="browser-row compact-browser-row">
               <button className="browser-main" onClick={() => loadPatch(patch.id)}>
                 <strong>{patch.name}</strong>
-                <span>{patch.author || 'User Patch'}</span>
+                <span>{patch.author || 'User Patch'}{Number.isInteger(patch.patchCategory) || Number.isInteger(patch.patchGenre) ? ` · Cat ${patch.patchCategory ?? 0} · Genre ${patch.patchGenre ?? 0}` : ''}</span>
               </button>
               <div className="browser-actions">
                 <span className="tag">Load</span>
@@ -95,13 +147,27 @@ export default function PatchTab({
       </Panel>
 
       <Panel title="Backup + Share" className="full-width">
-        <div className="toolbar-row compact-toolbar-row">
-          <button className="hero-button" onClick={exportState}>Export JSON</button>
-          <button className="hero-button ghost" onClick={() => fileRef.current?.click()}>Import JSON</button>
+        <div className="toolbar-row compact-toolbar-row" style={{ flexWrap: 'wrap' }}>
+          <button className="hero-button" onClick={exportPatchSysex}>Export Patch .syx</button>
+          <button className="hero-button ghost" onClick={() => sysexFileRef.current?.click()}>Import Patch .syx</button>
+          <input ref={sysexFileRef} type="file" accept=".syx,application/octet-stream,audio/x-midi" hidden onChange={importPatchSysex} />
+          <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)', alignSelf: 'stretch', margin: '0 8px' }} />
+          <button className="hero-button" onClick={exportState}>Export Backup JSON</button>
+          <button className="hero-button ghost" onClick={() => fileRef.current?.click()}>Import Backup JSON</button>
           <input ref={fileRef} type="file" accept="application/json" hidden onChange={importState} />
         </div>
-        <div className="info-card"><strong>What gets stored?</strong><span>Current synth parameters, modulation routes, macro routes, patches, projects, drum settings, and sequencer state with step locks.</span></div>
+        <div className="info-card"><strong>Patch files</strong><span>.syx exports are portable Circuit Tracks single-patch files. JSON backups are for restoring the full app state, including patches, projects, drum settings, and sequencer step locks.</span></div>
       </Panel>
+
+      {/* RENDER THE MODAL IF OPEN */}
+      {isBurnModalOpen && (
+        <BurnModal
+          onClose={() => setIsBurnModalOpen(false)}
+          onConfirm={burnPatchToHardware}
+          hardwareSaveSlot={hardwareSaveSlot}
+          setHardwareSaveSlot={setHardwareSaveSlot}
+        />
+      )}
     </div>
   );
 }

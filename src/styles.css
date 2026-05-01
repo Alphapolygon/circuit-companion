@@ -767,3 +767,38 @@ input, select { background: #0f1521; color: var(--text); border: 1px solid rgba(
   right: 8px;
   z-index: 10;
 }
+
+/* --- SLOT SELECTOR GRID --- */
+.slot-chip-grid { 
+  display: grid; 
+  grid-template-columns: repeat(8, minmax(0, 1fr)); 
+  gap: 6px; 
+  margin: 12px 0; 
+}
+.slot-chip { 
+  border-radius: 8px; 
+  border: 1px solid rgba(155,176,203,0.14); 
+  background: rgba(11,17,24,0.9); 
+  color: var(--text); 
+  padding: 10px 4px; 
+  font-size: 0.8rem; 
+  font-weight: 800; 
+  text-align: center; 
+  transition: all 0.1s ease;
+}
+.slot-chip.active { 
+  color: var(--cyan) !important; 
+  border-color: rgba(45,200,255,0.45); 
+  box-shadow: inset 0 0 0 1px rgba(45,200,255,0.12), 0 4px 12px rgba(45,200,255,0.15); 
+  background: rgba(45,200,255,0.15); 
+  transform: translateY(-2px);
+}
+.slot-chip:hover:not(.active) { 
+  filter: brightness(1.4); 
+  background: rgba(255,255,255,0.05); 
+}
+
+@media (max-width: 860px) { 
+  .slot-chip-grid { gap: 4px; } 
+  .slot-chip { padding: 8px 2px; font-size: 0.7rem; } 
+}
