@@ -30,18 +30,11 @@ import {
 import { usePersistentState } from './hooks/usePersistentState.js';
 import { useModMatrix } from './hooks/useModMatrix.js';
 import { useMacroMatrix } from './hooks/useMacroMatrix.js';
-import { useMidiEngine } from './hooks/useMidiEngine.js';
+import { useMidiEngine, parsePatchDump, buildPatchSysexMessage } from './hooks/useMidiEngine.js';
 import { useSequencer } from './hooks/useSequencer.js';
 
 const TAB_COMPONENTS = {
-  OSC: OscTab,
-  MIX: MixTab,
-  FX: FxTab,
-  MOD: ModTab,
-  PATCH: PatchTab,
-  PERFORM: PerformTab,
-  GLOBAL: GlobalTab,
-  DRUMS: DrumsTab,
+  OSC: OscTab, MIX: MixTab, FX: FxTab, MOD: ModTab, PATCH: PatchTab, PERFORM: PerformTab, GLOBAL: GlobalTab, DRUMS: DrumsTab,
 };
 
 function clampValue(value) {
@@ -49,7 +42,8 @@ function clampValue(value) {
 }
 
 function mapHardwareRoute(parsedRoute, modSources, paramsMeta) {
-  const source = modSources.find((entry) => entry.hardwareSourceId === parsedRoute.source);
+  // FIX: Using source1 here to perfectly map the hardware's 4-byte assignment blocks
+  const source = modSources.find((entry) => entry.hardwareSourceId === parsedRoute.source1);
   const targetEntry = Object.entries(paramsMeta).find(([, meta]) => meta.modDestination === parsedRoute.destination);
   if (!source || !targetEntry) return null;
   return {
@@ -57,6 +51,7 @@ function mapHardwareRoute(parsedRoute, modSources, paramsMeta) {
     sourceId: source.id,
     targetId: targetEntry[0],
     amount: parsedRoute.depth,
+    hardwareSlot: parsedRoute.slot,
   };
 }
 
@@ -72,6 +67,7 @@ function mapHardwareMacroRoute(parsedRoute, macroSources, paramsMeta) {
     start: parsedRoute.start,
     end: parsedRoute.end,
     depth: parsedRoute.depth,
+    hardwareSlot: parsedRoute.slot,
   };
 }
 
@@ -80,6 +76,8 @@ export default function App() {
   const [synthChannel, setSynthChannel] = useState(0);
   const [params, setParams] = useState(DEFAULT_PARAMS);
   const [patchName, setPatchName] = useState('My Patch');
+  const [patchCategory, setPatchCategory] = useState(null);
+  const [patchGenre, setPatchGenre] = useState(null);
   const [projectName, setProjectName] = useState('New Project');
   const [sequence, setSequence] = useState(DEFAULT_SEQUENCE);
   const [hardwarePatchStatus, setHardwarePatchStatus] = useState('');
@@ -114,36 +112,17 @@ export default function App() {
     }
   }, [midi, activeLockStep, updateStepLock]);
 
-  const { 
-    selectedOutputId, 
-    invalidateRouteSync, 
-    invalidateMacroRouteSync, 
-    syncHardwareModMatrix, 
-    syncHardwareMacroMatrix 
-  } = midi;
+  const { selectedOutputId, invalidateRouteSync, invalidateMacroRouteSync, syncHardwareModMatrix, syncHardwareMacroMatrix } = midi;
 
   useEffect(() => {
-    if (skipParamPushRef.current) {
-      skipParamPushRef.current = false;
-      return;
-    }
+    if (skipParamPushRef.current) { skipParamPushRef.current = false; return; }
     if (!selectedOutputId) return;
     
     invalidateRouteSync();
     invalidateMacroRouteSync();
     syncHardwareModMatrix(mod.routes);
     syncHardwareMacroMatrix(macroMod.routes);
-    
-  }, [
-    mod.routes, 
-    macroMod.routes, 
-    synthChannel, 
-    selectedOutputId, 
-    invalidateRouteSync, 
-    invalidateMacroRouteSync, 
-    syncHardwareModMatrix, 
-    syncHardwareMacroMatrix
-  ]);
+  }, [mod.routes, macroMod.routes, synthChannel, selectedOutputId, invalidateRouteSync, invalidateMacroRouteSync, syncHardwareModMatrix, syncHardwareMacroMatrix]);
 
   const applyPatchState = useCallback((nextParams, nextRoutes = mod.routes, nextMacroRoutes = macroMod.routes, pushToHardware = true) => {
     skipParamPushRef.current = true;
@@ -163,44 +142,24 @@ export default function App() {
   }, [midi, mod, macroMod]);
 
   const savePatch = () => {
-    const nextPatch = {
-      id: crypto.randomUUID(),
-      name: patchName.trim() || 'Untitled Patch',
-      author: 'User',
-      params,
-      routes: mod.routes,
-      macroRoutes: macroMod.routes,
-    };
+    const nextPatch = { id: crypto.randomUUID(), name: patchName.trim() || 'Untitled Patch', author: 'User', params, routes: mod.routes, macroRoutes: macroMod.routes, patchCategory, patchGenre };
     setPatches((current) => [nextPatch, ...current]);
   };
 
   const loadPatch = (patchId) => {
     const patch = patches.find((entry) => entry.id === patchId);
     if (!patch) return;
-
-    const isHardware = Number.isInteger(patch.program);
-    if (isHardware && midi.sendProgramChange) {
-      midi.sendProgramChange(patch.program);
-    }
-
-    applyPatchState({ ...DEFAULT_PARAMS, ...patch.params }, patch.routes || [], patch.macroRoutes || [], !isHardware);
+    if (Number.isInteger(patch.program) && midi.sendProgramChange) midi.sendProgramChange(patch.program);
+    applyPatchState({ ...DEFAULT_PARAMS, ...patch.params }, patch.routes || [], patch.macroRoutes || [], !Number.isInteger(patch.program));
     setPatchName(patch.name);
+    setPatchCategory(patch.patchCategory ?? null);
+    setPatchGenre(patch.patchGenre ?? null);
   };
 
   const deletePatch = (patchId) => setPatches((current) => current.filter((entry) => entry.id !== patchId));
 
   const saveProject = () => {
-    const nextProject = {
-      id: crypto.randomUUID(),
-      name: projectName.trim() || 'Untitled Project',
-      bpm: params.global_bpm,
-      activePatchId: patchName.trim() || 'Current',
-      params,
-      routes: mod.routes,
-      macroRoutes: macroMod.routes,
-      sequence,
-      synthChannel,
-    };
+    const nextProject = { id: crypto.randomUUID(), name: projectName.trim() || 'Untitled Project', bpm: params.global_bpm, activePatchId: patchName.trim() || 'Current', params, routes: mod.routes, macroRoutes: macroMod.routes, sequence, synthChannel };
     setProjects((current) => [nextProject, ...current]);
   };
 
@@ -216,13 +175,11 @@ export default function App() {
   const deleteProject = (projectId) => setProjects((current) => current.filter((entry) => entry.id !== projectId));
 
   const exportState = () => {
-    const blob = new Blob([
-      JSON.stringify({ params, routes: mod.routes, macroRoutes: macroMod.routes, patches, projects, sequence, synthChannel, hardwareSaveSlot }, null, 2),
-    ], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ params, routes: mod.routes, macroRoutes: macroMod.routes, patches, projects, sequence, synthChannel, hardwareSaveSlot }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'circuit-companion-state.json';
+    link.download = 'circuit-companion-backup.json';
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -232,10 +189,7 @@ export default function App() {
     if (!file) return;
     const text = await file.text();
     const parsed = JSON.parse(text);
-    const importedParams = parsed.params ? { ...DEFAULT_PARAMS, ...parsed.params } : params;
-    const importedRoutes = parsed.routes || mod.routes;
-    const importedMacroRoutes = parsed.macroRoutes || macroMod.routes;
-    applyPatchState(importedParams, importedRoutes, importedMacroRoutes);
+    applyPatchState(parsed.params ? { ...DEFAULT_PARAMS, ...parsed.params } : params, parsed.routes || mod.routes, parsed.macroRoutes || macroMod.routes);
     if (parsed.patches) setPatches(parsed.patches);
     if (parsed.projects) setProjects(parsed.projects);
     if (parsed.sequence) setSequence(parsed.sequence);
@@ -244,24 +198,68 @@ export default function App() {
     event.target.value = '';
   };
 
+  // --- NEW: SYSEX IMPORT AND EXPORT FOR PATCH TAB ---
+  const exportPatchSysex = () => {
+    const sysexArray = buildPatchSysexMessage({
+      params,
+      routes: mod.routes,
+      macroRoutes: macroMod.routes,
+      patchName,
+      paramsMeta: PARAMS,
+      hardwareSourceMap: Object.fromEntries(MOD_SOURCES.filter(s => Number.isInteger(s.hardwareSourceId)).map(s => [s.id, s.hardwareSourceId])),
+      macroSourceMap: Object.fromEntries(MACRO_SOURCES.filter(s => Number.isInteger(s.hardwareMacroIndex)).map(s => [s.id, s.hardwareMacroIndex])),
+      patchCategory,
+      patchGenre,
+      command: 0x00,
+      location: synthChannel
+    });
+    
+    const blob = new Blob([new Uint8Array(sysexArray)], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const safeName = patchName.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'circuit_patch';
+    link.download = `${safeName}.syx`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importPatchSysex = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    
+    const parsed = parsePatchDump(bytes, PARAMS);
+    if (parsed) {
+      const nextParams = { ...DEFAULT_PARAMS, ...parsed.params };
+      const nextRoutes = parsed.hardwareRoutes.map((route) => mapHardwareRoute(route, MOD_SOURCES, PARAMS)).filter(Boolean);
+      const nextMacroRoutes = parsed.hardwareMacroRoutes.map((route) => mapHardwareMacroRoute(route, MACRO_SOURCES, PARAMS)).filter(Boolean);
+      
+      applyPatchState(nextParams, nextRoutes, nextMacroRoutes, false);
+      if (parsed.patchName) setPatchName(parsed.patchName);
+      setPatchCategory(parsed.patchCategory ?? null);
+      setPatchGenre(parsed.patchGenre ?? null);
+      setHardwarePatchStatus(`Successfully imported ${parsed.patchName || 'patch'} from file.`);
+    } else {
+      setHardwarePatchStatus('Error: Invalid or unsupported .syx file.');
+    }
+    event.target.value = '';
+  };
+  // ---------------------------------------------------
+
   const burnPatchToHardware = useCallback(async () => {
     setHardwarePatchStatus(`Capturing active state & Queueing to slot ${hardwareSaveSlot}…`);
     try {
       const dump = await midi.requestCurrentPatchDump();
-      
       await midi.sendPatchToHardware({
-        params,
-        routes: mod.routes,
-        macroRoutes: macroMod.routes,
-        patchName,
-        program: hardwareSaveSlot - 1,
-        basePayload: dump.rawPayload
+        params, routes: mod.routes, macroRoutes: macroMod.routes, patchName, program: hardwareSaveSlot - 1, basePayload: dump.rawPayload, patchCategory, patchGenre
       });
       setHardwarePatchStatus(`Queued ${patchName || 'current patch'} to slot ${hardwareSaveSlot}. Press SAVE on device!`);
     } catch (err) {
       setHardwarePatchStatus(err.message || 'Hardware burn failed.');
     }
-  }, [midi, params, mod.routes, macroMod.routes, patchName, hardwareSaveSlot]);
+  }, [midi, params, mod.routes, macroMod.routes, patchName, hardwareSaveSlot, patchCategory, patchGenre]);
 
   const fetchPatchFromHardware = useCallback(async () => {
     setHardwarePatchStatus('Requesting patch from hardware…');
@@ -272,6 +270,8 @@ export default function App() {
       const nextMacroRoutes = parsed.hardwareMacroRoutes.map((route) => mapHardwareMacroRoute(route, MACRO_SOURCES, PARAMS)).filter(Boolean);
       applyPatchState(nextParams, nextRoutes, nextMacroRoutes, false);
       if (parsed.patchName) setPatchName(parsed.patchName);
+      setPatchCategory(parsed.patchCategory ?? null);
+      setPatchGenre(parsed.patchGenre ?? null);
       setHardwarePatchStatus(parsed.patchName ? `Loaded ${parsed.patchName} from hardware.` : 'Loaded current hardware patch.');
     } catch (err) {
       setHardwarePatchStatus(err.message || 'Hardware patch request failed.');
@@ -279,11 +279,7 @@ export default function App() {
   }, [applyPatchState, midi]);
 
   const syncAllHardwarePatches = useCallback(async () => {
-    if (!midi.selectedOutputId || !midi.selectedInputId) {
-      setHardwarePatchStatus('Error: Both MIDI Out and MIDI In must be selected!');
-      return;
-    }
-
+    if (!midi.selectedOutputId || !midi.selectedInputId) return setHardwarePatchStatus('Error: Both MIDI Out and MIDI In must be selected!');
     setHardwarePatchStatus('Starting bulk sync... Please wait (~15 seconds).');
     const hwPatches = [];
 
@@ -291,42 +287,21 @@ export default function App() {
       try {
         setHardwarePatchStatus(`Fetching slot ${i + 1} of 64...`);
         const parsed = await midi.requestCurrentPatchDump(i);
-
         const nextParams = { ...DEFAULT_PARAMS, ...parsed.params };
         const nextRoutes = parsed.hardwareRoutes.map((route) => mapHardwareRoute(route, MOD_SOURCES, PARAMS)).filter(Boolean);
         const nextMacroRoutes = parsed.hardwareMacroRoutes.map((route) => mapHardwareMacroRoute(route, MACRO_SOURCES, PARAMS)).filter(Boolean);
-
-        hwPatches.push({
-          id: `hw-synth${synthChannel + 1}-slot${i + 1}`,
-          name: parsed.patchName || `HW Slot ${i + 1}`,
-          author: `Circuit Synth ${synthChannel + 1}`,
-          params: nextParams,
-          routes: nextRoutes,
-          macroRoutes: nextMacroRoutes,
-          program: i,
-        });
-
+        hwPatches.push({ id: `hw-synth${synthChannel + 1}-slot${i + 1}`, name: parsed.patchName || `HW Slot ${i + 1}`, author: `Circuit Synth ${synthChannel + 1}`, params: nextParams, routes: nextRoutes, macroRoutes: nextMacroRoutes, program: i, patchCategory: parsed.patchCategory, patchGenre: parsed.patchGenre });
         await new Promise(resolve => setTimeout(resolve, 50));
-
       } catch (err) {
-        console.error(`Failed to fetch slot ${i + 1}`, err);
         setHardwarePatchStatus(`Sync aborted at slot ${i + 1}: ${err.message}. Ensure Circuit is not busy.`);
         return; 
       }
     }
-
-    setPatches((current) => {
-      const filtered = current.filter(p => !p.id.startsWith(`hw-synth${synthChannel + 1}-`));
-      return [...hwPatches, ...filtered];
-    });
-
+    setPatches((current) => [...hwPatches, ...current.filter(p => !p.id.startsWith(`hw-synth${synthChannel + 1}-`))]);
     setHardwarePatchStatus(`Successfully synced ${hwPatches.length} patches from hardware.`);
   }, [midi, synthChannel, setPatches]);
 
-  const toggleStep = (index) => {
-    setSequence((current) => current.map((step) => step.index === index ? { ...step, active: !step.active } : step));
-  };
-
+  const toggleStep = (index) => setSequence((current) => current.map((step) => step.index === index ? { ...step, active: !step.active } : step));
   const cycleStepProbability = (index) => {
     const values = [25, 50, 75, 100];
     setSequence((current) => current.map((step) => {
@@ -335,60 +310,39 @@ export default function App() {
       return { ...step, probability: values[(currentIdx + 1) % values.length] };
     }));
   };
-
-  const updateStepNotes = useCallback((index, notes) => {
-    setSequence((current) => current.map((step) => step.index === index ? { ...step, note: notes } : step));
-  }, []);
-
-  const clearStepLocks = useCallback((index) => {
-    setSequence((current) => current.map((step) => step.index === index ? { ...step, locks: {} } : step));
-  }, []);
+  const updateStepNotes = useCallback((index, notes) => setSequence((current) => current.map((step) => step.index === index ? { ...step, note: notes } : step)), []);
+  const clearStepLocks = useCallback((index) => setSequence((current) => current.map((step) => step.index === index ? { ...step, locks: {} } : step)), []);
 
   const sequencer = useSequencer({
-    sequence,
-    bpm: params.global_bpm,
-    swing: params.global_swing,
-    probabilityBias: params.global_prob,
+    sequence, bpm: params.global_bpm, swing: params.global_swing, probabilityBias: params.global_prob,
     onStep: ({ notes, velocity, gate, stepMs, locks }) => {
       Object.entries(locks || {}).forEach(([paramId, value]) => midi.sendParamValue(paramId, value));
-      const durationMs = Math.max(40, stepMs * (gate / 127));
-      notes.forEach((note) => midi.playNote(note, velocity, durationMs));
+      notes.forEach((note) => midi.playNote(note, velocity, Math.max(40, stepMs * (gate / 127))));
     },
   });
 
   const effectiveParams = useMemo(() => {
     const result = { ...params };
-    
     macroMod.routes.forEach((route) => {
       const macroVal = params[route.sourceId] || 0;
       const start = route.start ?? 0;
       const end = route.end ?? 127;
-      const depth = route.depth ?? 64;
-      
       let progress = 0;
       if (start < end) {
         if (macroVal >= end) progress = 1;
         else if (macroVal > start) progress = (macroVal - start) / (end - start);
-      } else if (start > end) { // Inverted range
+      } else if (start > end) {
         if (macroVal <= end) progress = 1;
         else if (macroVal < start) progress = (start - macroVal) / (start - end);
       }
-      
-      const depthNormalized = (depth - 64) / 63; 
-      const offset = progress * depthNormalized * 127;
-      
-      if (result[route.targetId] !== undefined) {
-        result[route.targetId] = Math.max(0, Math.min(127, Math.round(result[route.targetId] + offset)));
-      }
+      const offset = progress * ((route.depth ?? 64) - 64) / 63 * 127;
+      if (result[route.targetId] !== undefined) result[route.targetId] = Math.max(0, Math.min(127, Math.round(result[route.targetId] + offset)));
     });
-    
     return result;
   }, [params, macroMod.routes]);
 
   const summary = useMemo(() => ({
-    patch: patchName,
-    routes: mod.routes.length,
-    midi: midi.selectedOutputId ? 'Connected' : 'No Port',
+    patch: patchName, routes: mod.routes.length, midi: midi.selectedOutputId ? 'Connected' : 'No Port',
     armedSource: mod.armedSource ? mod.armedSource.replaceAll('_', ' ') : (macroMod.armedSource ? macroMod.armedSource.replaceAll('_', ' ') : 'None'),
   }), [patchName, mod.routes.length, midi.selectedOutputId, mod.armedSource, macroMod.armedSource]);
 
@@ -403,12 +357,7 @@ export default function App() {
         </div>
         <TopNav tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
         <div className="hero-actions compact-actions">
-            <OptionSelector 
-              label="Track" 
-              value={synthChannel} 
-              options={SYNTH_CHANNELS.map((item) => ({ label: `${item.label} · Ch ${item.midi}`, value: item.value }))}
-              onChange={(val) => setSynthChannel(Number(val))} 
-            />
+            <OptionSelector label="Track" value={synthChannel} options={SYNTH_CHANNELS.map((item) => ({ label: `${item.label} · Ch ${item.midi}`, value: item.value }))} onChange={(val) => setSynthChannel(Number(val))} />
           <button className="hero-button" onPointerDown={() => midi.playPreviewNote(true)} onPointerUp={() => midi.playPreviewNote(false)} onPointerLeave={() => midi.playPreviewNote(false)}>
             <Volume2 size={14} /> Preview
           </button>
@@ -475,58 +424,22 @@ export default function App() {
           <div className="rail-panel compact">
             <div className="rail-title"><Save size={14} /> MIDI</div>
             <div className="field-stack compact-stack">
-              <OptionSelector
-                label="Out"
-                value={midi.selectedOutputId}
-                options={[{label: 'No output', value: ''}, ...midi.outputs.map((port) => ({label: port.name, value: port.id}))]}
-                onChange={midi.setSelectedOutputId}
-              />
-              <OptionSelector
-                label="In"
-                value={midi.selectedInputId}
-                options={[{label: 'No input', value: ''}, ...midi.inputs.map((port) => ({label: port.name, value: port.id}))]}
-                onChange={midi.setSelectedInputId}
-              />
+              <OptionSelector label="Out" value={midi.selectedOutputId} options={[{label: 'No output', value: ''}, ...midi.outputs.map((port) => ({label: port.name, value: port.id}))]} onChange={midi.setSelectedOutputId} />
+              <OptionSelector label="In" value={midi.selectedInputId} options={[{label: 'No input', value: ''}, ...midi.inputs.map((port) => ({label: port.name, value: port.id}))]} onChange={midi.setSelectedInputId} />
             </div>
           </div>
         </aside>
 
         <main className="main-stage compact-stage">
           <ActiveTab
-            params={params}
-            effectiveParams={effectiveParams}
-            updateParam={updateParam}
-            mod={mod}
-            macroMod={macroMod}
-            routes={mod.routes}
-            patchName={patchName}
-            setPatchName={setPatchName}
-            projectName={projectName}
-            setProjectName={setProjectName}
-            patches={patches}
-            projects={projects}
-            savePatch={savePatch}
-            loadPatch={loadPatch}
-            deletePatch={deletePatch}
-            saveProject={saveProject}
-            loadProject={loadProject}
-            deleteProject={deleteProject}
-            exportState={exportState}
-            importState={importState}
-            fetchPatchFromHardware={fetchPatchFromHardware}
-            syncAllHardwarePatches={syncAllHardwarePatches}
-            burnPatchToHardware={burnPatchToHardware}
-            hardwarePatchStatus={hardwarePatchStatus}
-            hardwareSaveSlot={hardwareSaveSlot}
-            setHardwareSaveSlot={setHardwareSaveSlot}
-            sequence={sequence}
-            toggleStep={toggleStep}
-            cycleStepProbability={cycleStepProbability}
-            sequencer={sequencer}
-            activeLockStep={activeLockStep}
-            setActiveLockStep={setActiveLockStep}
-            updateStepNotes={updateStepNotes}
-            clearStepLocks={clearStepLocks}
+            params={params} effectiveParams={effectiveParams} updateParam={updateParam} mod={mod} macroMod={macroMod} routes={mod.routes}
+            patchName={patchName} setPatchName={setPatchName} patchCategory={patchCategory} patchGenre={patchGenre} projectName={projectName} setProjectName={setProjectName}
+            patches={patches} projects={projects} savePatch={savePatch} loadPatch={loadPatch} deletePatch={deletePatch} saveProject={saveProject} loadProject={loadProject} deleteProject={deleteProject}
+            exportState={exportState} importState={importState} exportPatchSysex={exportPatchSysex} importPatchSysex={importPatchSysex}
+            fetchPatchFromHardware={fetchPatchFromHardware} syncAllHardwarePatches={syncAllHardwarePatches} burnPatchToHardware={burnPatchToHardware}
+            hardwarePatchStatus={hardwarePatchStatus} hardwareSaveSlot={hardwareSaveSlot} setHardwareSaveSlot={setHardwareSaveSlot}
+            sequence={sequence} toggleStep={toggleStep} cycleStepProbability={cycleStepProbability} sequencer={sequencer}
+            activeLockStep={activeLockStep} setActiveLockStep={setActiveLockStep} updateStepNotes={updateStepNotes} clearStepLocks={clearStepLocks}
           />
         </main>
       </section>

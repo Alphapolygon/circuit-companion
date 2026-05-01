@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { clamp7 } from '../utils/app.js';
-import { NOVATION_SYSEX_HEADER, PATCH_BYTE_MAP, PATCH_NAME_RANGE } from '../data/circuitTracks.js';
+import {
+  MACRO_SECTION_COUNT,
+  MACRO_SECTION_OFFSET,
+  MACRO_SECTION_STRIDE,
+  MACRO_TARGETS_PER_SECTION,
+  MACRO_TARGET_STRIDE,
+  MOD_MATRIX_OFFSET,
+  MOD_MATRIX_SLOTS,
+  MOD_MATRIX_STRIDE,
+  NOVATION_SYSEX_HEADER,
+  PATCH_BYTE_MAP,
+  PATCH_CATEGORY_INDEX,
+  PATCH_DATA_LENGTH,
+  PATCH_GENRE_INDEX,
+  PATCH_NAME_RANGE
+} from '../data/circuitTracks.js';
 
 function createModSlotNrpn(count = 20) {
   const start = 211;
@@ -22,14 +37,13 @@ function createMacroSlotNrpn(count = 32) {
 
 const MOD_SLOT_NRPN = createModSlotNrpn(20);
 const MACRO_SLOT_NRPN = createMacroSlotNrpn(32);
-const PATCH_DATA_LENGTH = 348;
 
-function decodePatchName(bytes = []) {
+export function decodePatchName(bytes = []) {
   const [start, end] = PATCH_NAME_RANGE;
   return bytes.slice(start, end).map((v) => (v >= 32 && v <= 126 ? String.fromCharCode(v) : '')).join('').trim();
 }
 
-function encodePatchName(bytes, name = '') {
+export function encodePatchName(bytes, name = '') {
   const [start, end] = PATCH_NAME_RANGE;
   const clean = String(name || '').slice(0, end - start).padEnd(end - start, ' ');
   for (let i = start; i < end; i += 1) {
@@ -37,15 +51,34 @@ function encodePatchName(bytes, name = '') {
   }
 }
 
-function parsePatchDump(message, paramsMeta) {
+export function decodePatchMeta(bytes = []) {
+  return {
+    patchCategory: Number.isInteger(bytes[PATCH_CATEGORY_INDEX]) ? clamp7(bytes[PATCH_CATEGORY_INDEX]) : 0,
+    patchGenre: Number.isInteger(bytes[PATCH_GENRE_INDEX]) ? clamp7(bytes[PATCH_GENRE_INDEX]) : 0,
+  };
+}
+
+export function encodePatchMeta(bytes, { patchCategory = null, patchGenre = null } = {}) {
+  if (Number.isInteger(patchCategory)) bytes[PATCH_CATEGORY_INDEX] = clamp7(patchCategory);
+  if (Number.isInteger(patchGenre)) bytes[PATCH_GENRE_INDEX] = clamp7(patchGenre);
+}
+
+export function parsePatchDump(message, paramsMeta) {
   const bytes = Array.from(message);
   if (bytes[0] !== 0xf0 || bytes[bytes.length - 1] !== 0xf7) return null;
   const header = bytes.slice(1, 6);
   if (header.join(',') !== NOVATION_SYSEX_HEADER.join(',')) return null;
 
-  const patchData = bytes.slice(8, -1);
-  const params = {};
+  const command = bytes[6];
+  if (command !== 0x00 && command !== 0x01) return null;
+
+  const location = bytes[7];
   
+  // FIX: Payload starts exactly at byte 8 (F0 + 5 Header + Cmd + Loc)
+  const patchData = bytes.slice(8, 8 + PATCH_DATA_LENGTH);
+  if (patchData.length !== PATCH_DATA_LENGTH) return null;
+
+  const params = {};
   Object.entries(PATCH_BYTE_MAP).forEach(([paramId, byteIndex]) => {
     if (typeof patchData[byteIndex] === 'number' && paramsMeta[paramId]) {
       params[paramId] = clamp7(patchData[byteIndex]);
@@ -53,50 +86,117 @@ function parsePatchDump(message, paramsMeta) {
   });
 
   const routes = [];
-  for (let i = 0; i < 20; i += 1) {
-    const offset = 116 + i * 4;
+  for (let i = 0; i < MOD_MATRIX_SLOTS; i += 1) {
+    const offset = MOD_MATRIX_OFFSET + i * MOD_MATRIX_STRIDE;
     const source1 = patchData[offset];
+    const source2 = patchData[offset + 1];
     const depth = patchData[offset + 2];
     const destination = patchData[offset + 3];
-    if (!source1 || !destination) continue;
-    routes.push({ slot: i, source: source1, depth, destination });
+    if (!destination || (!source1 && !source2)) continue;
+    routes.push({ slot: i, source1, source2, depth, destination });
   }
 
   const macroRoutes = [];
-  for (let macroIndex = 0; macroIndex < 8; macroIndex += 1) {
-    const baseOffset = 196 + macroIndex * 17;
-    for (let slot = 0; slot < 4; slot += 1) {
-      const offset = baseOffset + 1 + slot * 4;
+  for (let macroIndex = 0; macroIndex < MACRO_SECTION_COUNT; macroIndex += 1) {
+    const baseOffset = MACRO_SECTION_OFFSET + macroIndex * MACRO_SECTION_STRIDE;
+    for (let slot = 0; slot < MACRO_TARGETS_PER_SECTION; slot += 1) {
+      const offset = baseOffset + 1 + slot * MACRO_TARGET_STRIDE;
       const destination = patchData[offset];
       if (!destination) continue;
-      macroRoutes.push({ slot: macroIndex * 4 + slot, destination, start: patchData[offset + 1], end: patchData[offset + 2], depth: patchData[offset + 3] });
+      macroRoutes.push({
+        slot: macroIndex * MACRO_TARGETS_PER_SECTION + slot,
+        destination,
+        start: patchData[offset + 1],
+        end: patchData[offset + 2],
+        depth: patchData[offset + 3],
+      });
     }
   }
 
+  const meta = decodePatchMeta(patchData);
+
   return {
     raw: bytes,
-    rawPayload: patchData, // We expose the raw 348 bytes so we can use them as a foundation!
+    command,
+    location,
+    rawPayload: patchData,
     patchName: decodePatchName(patchData),
+    ...meta,
     params,
     hardwareRoutes: routes,
     hardwareMacroRoutes: macroRoutes,
   };
 }
 
-// Accepts a basePayload to ensure hidden params (like Volume) are preserved
-function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = '', paramsMeta, hardwareSourceMap, macroSourceMap, basePayload }) {
-  const patchData = basePayload ? [...basePayload] : new Array(PATCH_DATA_LENGTH).fill(0);
-
-  if (!basePayload) {
-    patchData[1] = 127;
-    patchData[2] = 127;
-  } else {
-    // CRITICAL: We surgically wipe the old matrices so ghost routes don't bleed through
-    for (let i = 116; i < 196; i++) patchData[i] = 0; // Wipe Mod Matrix
-    for (let m = 0; m < 8; m++) {
-      for (let b = 1; b < 17; b++) patchData[196 + m * 17 + b] = 0; // Wipe Macro Targets
-    }
+function clearRoutingSections(patchData) {
+  for (let i = MOD_MATRIX_OFFSET; i < MACRO_SECTION_OFFSET; i += 1) patchData[i] = 0;
+  for (let macroIndex = 0; macroIndex < MACRO_SECTION_COUNT; macroIndex += 1) {
+    const sectionStart = MACRO_SECTION_OFFSET + macroIndex * MACRO_SECTION_STRIDE;
+    for (let i = 1; i < MACRO_SECTION_STRIDE; i += 1) patchData[sectionStart + i] = 0;
   }
+}
+
+function placePreferredRoute(assignments, preferredSlot, route) {
+  if (Number.isInteger(preferredSlot) && preferredSlot >= 0 && preferredSlot < assignments.length && !assignments[preferredSlot]) {
+    assignments[preferredSlot] = route;
+    return true;
+  }
+  const firstFreeSlot = assignments.findIndex((entry) => entry === null);
+  if (firstFreeSlot === -1) return false;
+  assignments[firstFreeSlot] = { ...route, slot: firstFreeSlot };
+  return true;
+}
+
+function writeModAssignments(patchData, assignments) {
+  assignments.forEach((route, slot) => {
+    if (!route) return;
+    const offset = MOD_MATRIX_OFFSET + slot * MOD_MATRIX_STRIDE;
+    patchData[offset] = clamp7(route.source1 ?? 0);
+    patchData[offset + 1] = clamp7(route.source2 ?? 0);
+    patchData[offset + 2] = clamp7(route.depth ?? 64);
+    patchData[offset + 3] = clamp7(route.destination ?? 0);
+  });
+}
+
+function findFirstFreeMacroSlot(assignments, macroIndex) {
+  const start = macroIndex * MACRO_TARGETS_PER_SECTION;
+  const end = start + MACRO_TARGETS_PER_SECTION;
+  for (let slot = start; slot < end; slot += 1) {
+    if (!assignments[slot]) return slot;
+  }
+  return -1;
+}
+
+function writeMacroAssignments(patchData, assignments) {
+  assignments.forEach((route, slot) => {
+    if (!route) return;
+    const offset = MACRO_SECTION_OFFSET + Math.floor(slot / MACRO_TARGETS_PER_SECTION) * MACRO_SECTION_STRIDE + 1 + (slot % MACRO_TARGETS_PER_SECTION) * MACRO_TARGET_STRIDE;
+    patchData[offset] = clamp7(route.destination ?? 0);
+    patchData[offset + 1] = clamp7(route.start ?? 0);
+    patchData[offset + 2] = clamp7(route.end ?? 127);
+    patchData[offset + 3] = clamp7(route.depth ?? 64);
+  });
+}
+
+export function buildPatchPayload({
+  params,
+  routes = [],
+  macroRoutes = [],
+  patchName = '',
+  paramsMeta,
+  hardwareSourceMap,
+  macroSourceMap,
+  basePayload,
+  preservedHardwareRoutes = [],
+  preservedHardwareMacroRoutes = [],
+  patchCategory = null,
+  patchGenre = null,
+}) {
+  const patchData = Array.isArray(basePayload) && basePayload.length === PATCH_DATA_LENGTH
+    ? [...basePayload]
+    : new Array(PATCH_DATA_LENGTH).fill(0);
+
+  clearRoutingSections(patchData);
 
   Object.entries(PATCH_BYTE_MAP).forEach(([paramId, byteIndex]) => {
     if (byteIndex >= 0 && byteIndex < patchData.length) {
@@ -104,36 +204,99 @@ function buildPatchPayload({ params, routes = [], macroRoutes = [], patchName = 
     }
   });
 
-  routes.filter((route) => Number.isInteger(hardwareSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.modDestination))
-    .slice(0, 20)
-    .forEach((route, index) => {
-      const offset = 116 + index * 4;
-      patchData[offset] = clamp7(hardwareSourceMap[route.sourceId]);
-      patchData[offset + 1] = 0; 
-      patchData[offset + 2] = clamp7(route.amount ?? 64);
-      patchData[offset + 3] = clamp7(paramsMeta[route.targetId]?.modDestination ?? 0);
+  const modAssignments = Array.from({ length: MOD_MATRIX_SLOTS }, () => null);
+  preservedHardwareRoutes
+    .filter((route) => Number.isInteger(route?.slot) && route.slot >= 0 && route.slot < MOD_MATRIX_SLOTS)
+    .forEach((route) => {
+      if (!modAssignments[route.slot]) {
+        modAssignments[route.slot] = {
+          slot: route.slot,
+          source1: clamp7(route.source1 ?? 0),
+          source2: clamp7(route.source2 ?? 0),
+          depth: clamp7(route.depth ?? 64),
+          destination: clamp7(route.destination ?? 0),
+        };
+      }
     });
 
-  const slottedMacroRoutes = Array.from({ length: 32 }, () => null);
-  macroRoutes.filter((route) => Number.isInteger(macroSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination))
-    .slice(0, 32)
+  routes
+    .filter((route) => Number.isInteger(hardwareSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.modDestination))
+    .slice(0, MOD_MATRIX_SLOTS)
+    .forEach((route) => {
+      placePreferredRoute(modAssignments, route.hardwareSlot, {
+        source1: clamp7(hardwareSourceMap[route.sourceId]),
+        source2: 0,
+        depth: clamp7(route.amount ?? 64),
+        destination: clamp7(paramsMeta[route.targetId]?.modDestination ?? 0),
+      });
+    });
+  writeModAssignments(patchData, modAssignments);
+
+  const macroAssignments = Array.from({ length: MACRO_SECTION_COUNT * MACRO_TARGETS_PER_SECTION }, () => null);
+  preservedHardwareMacroRoutes
+    .filter((route) => Number.isInteger(route?.slot) && route.slot >= 0 && route.slot < macroAssignments.length)
+    .forEach((route) => {
+      if (!macroAssignments[route.slot]) {
+        macroAssignments[route.slot] = {
+          slot: route.slot,
+          destination: clamp7(route.destination ?? 0),
+          start: clamp7(route.start ?? 0),
+          end: clamp7(route.end ?? 127),
+          depth: clamp7(route.depth ?? 64),
+        };
+      }
+    });
+
+  macroRoutes
+    .filter((route) => Number.isInteger(macroSourceMap[route.sourceId]) && Number.isInteger(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination))
+    .slice(0, macroAssignments.length)
     .forEach((route) => {
       const macroIndex = macroSourceMap[route.sourceId];
-      const slotOffset = slottedMacroRoutes.slice(macroIndex * 4, macroIndex * 4 + 4).filter(Boolean).length;
-      if (slotOffset < 4) slottedMacroRoutes[macroIndex * 4 + slotOffset] = route;
+      if (!Number.isInteger(macroIndex) || macroIndex < 0 || macroIndex >= MACRO_SECTION_COUNT) return;
+      const preferredSlot = Number.isInteger(route.hardwareSlot)
+        && route.hardwareSlot >= macroIndex * MACRO_TARGETS_PER_SECTION
+        && route.hardwareSlot < (macroIndex + 1) * MACRO_TARGETS_PER_SECTION
+        && !macroAssignments[route.hardwareSlot]
+        ? route.hardwareSlot
+        : findFirstFreeMacroSlot(macroAssignments, macroIndex);
+      if (preferredSlot === -1) return;
+      macroAssignments[preferredSlot] = {
+        slot: preferredSlot,
+        destination: clamp7(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0),
+        start: clamp7(route.start ?? 0),
+        end: clamp7(route.end ?? 127),
+        depth: clamp7(route.depth ?? 64),
+      };
     });
-
-  slottedMacroRoutes.forEach((route, index) => {
-    if (!route) return;
-    const offset = 196 + Math.floor(index / 4) * 17 + 1 + (index % 4) * 4;
-    patchData[offset] = clamp7(paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0);
-    patchData[offset + 1] = clamp7(route.start ?? 0);
-    patchData[offset + 2] = clamp7(route.end ?? 127);
-    patchData[offset + 3] = clamp7(route.depth ?? 64);
-  });
+  writeMacroAssignments(patchData, macroAssignments);
 
   encodePatchName(patchData, patchName);
+  encodePatchMeta(patchData, { patchCategory, patchGenre });
   return patchData;
+}
+
+export function buildPatchSysexMessage({
+  params = {},
+  routes = [],
+  macroRoutes = [],
+  patchName = '',
+  paramsMeta,
+  hardwareSourceMap,
+  macroSourceMap,
+  basePayload = null,
+  preservedHardwareRoutes = [],
+  preservedHardwareMacroRoutes = [],
+  patchCategory = null,
+  patchGenre = null,
+  command = 0x00,
+  location = 0x00,
+} = {}) {
+  const payload = buildPatchPayload({
+    params, routes, macroRoutes, patchName, paramsMeta, hardwareSourceMap, macroSourceMap, basePayload, preservedHardwareRoutes, preservedHardwareMacroRoutes, patchCategory, patchGenre,
+  });
+
+  // FIX: The extra `0x00` that corrupted the file has been surgically removed!
+  return [0xf0, ...NOVATION_SYSEX_HEADER, clamp7(command), clamp7(location), ...payload.map(clamp7), 0xf7];
 }
 
 export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSources = [], onIncomingParam }) {
@@ -148,21 +311,12 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
   const pendingPatchDumpRef = useRef(null);
 
   const ccToParam = useMemo(() => {
-    const pairs = Object.entries(paramsMeta)
-      .filter(([, meta]) => Number.isInteger(meta.cc))
-      .map(([paramId, meta]) => [meta.cc, paramId]);
+    const pairs = Object.entries(paramsMeta).filter(([, meta]) => Number.isInteger(meta.cc)).map(([paramId, meta]) => [meta.cc, paramId]);
     return Object.fromEntries(pairs);
   }, [paramsMeta]);
 
-  const hardwareSourceMap = useMemo(
-    () => Object.fromEntries(modSources.filter((source) => Number.isInteger(source.hardwareSourceId)).map((source) => [source.id, source.hardwareSourceId])),
-    [modSources]
-  );
-
-  const macroSourceMap = useMemo(
-    () => Object.fromEntries(macroSources.filter((source) => Number.isInteger(source.hardwareMacroIndex)).map((source) => [source.id, source.hardwareMacroIndex])),
-    [macroSources]
-  );
+  const hardwareSourceMap = useMemo(() => Object.fromEntries(modSources.filter((source) => Number.isInteger(source.hardwareSourceId)).map((source) => [source.id, source.hardwareSourceId])), [modSources]);
+  const macroSourceMap = useMemo(() => Object.fromEntries(macroSources.filter((source) => Number.isInteger(source.hardwareMacroIndex)).map((source) => [source.id, source.hardwareMacroIndex])), [macroSources]);
 
   useEffect(() => {
     if (!navigator.requestMIDIAccess) {
@@ -175,13 +329,11 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
       (access) => {
         if (!mounted) return;
         setMidiAccess(access);
-        const nextOutputs = Array.from(access.outputs.values());
-        const nextInputs = Array.from(access.inputs.values());
-        setOutputs(nextOutputs);
-        setInputs(nextInputs);
+        setOutputs(Array.from(access.outputs.values()));
+        setInputs(Array.from(access.inputs.values()));
 
-        const preferredOutput = nextOutputs.find((port) => port.name?.toLowerCase().includes('circuit tracks')) || nextOutputs[0];
-        const preferredInput = nextInputs.find((port) => port.name?.toLowerCase().includes('circuit tracks')) || nextInputs[0];
+        const preferredOutput = Array.from(access.outputs.values()).find((port) => port.name?.toLowerCase().includes('circuit tracks')) || Array.from(access.outputs.values())[0];
+        const preferredInput = Array.from(access.inputs.values()).find((port) => port.name?.toLowerCase().includes('circuit tracks')) || Array.from(access.inputs.values())[0];
 
         if (preferredOutput) setSelectedOutputId((current) => current || preferredOutput.id);
         if (preferredInput) setSelectedInputId((current) => current || preferredInput.id);
@@ -194,9 +346,7 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
       () => setError('MIDI access was denied.')
     );
 
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, []);
 
   const getOutput = useCallback(() => {
@@ -218,9 +368,7 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
       if (statusByte === 0xf0) {
         const parsed = parsePatchDump(data, paramsMeta);
         if (parsed && pendingPatchDumpRef.current) {
-          if (pendingPatchDumpRef.current.timeoutId) {
-            window.clearTimeout(pendingPatchDumpRef.current.timeoutId);
-          }
+          if (pendingPatchDumpRef.current.timeoutId) window.clearTimeout(pendingPatchDumpRef.current.timeoutId);
           pendingPatchDumpRef.current.resolve(parsed);
           pendingPatchDumpRef.current = null;
         }
@@ -232,68 +380,51 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
       if (paramId) onIncomingParam(paramId, data[2]);
     };
 
-    return () => {
-      input.onmidimessage = null;
-    };
+    return () => { input.onmidimessage = null; };
   }, [midiAccess, selectedInputId, synthChannel, ccToParam, onIncomingParam, paramsMeta]);
 
   const sendCC = useCallback((ccNumber, value, options = {}) => {
     const output = getOutput();
     if (!output || !Number.isInteger(ccNumber)) return;
-    const channel = Number.isInteger(options.channelOverride) ? options.channelOverride : synthChannel;
-    output.send([0xb0 + channel, ccNumber, clamp7(value)]);
+    output.send([0xb0 + (Number.isInteger(options.channelOverride) ? options.channelOverride : synthChannel), ccNumber, clamp7(value)]);
   }, [getOutput, synthChannel]);
 
   const sendProgramChange = useCallback((program, options = {}) => {
     const output = getOutput();
     if (!output || !Number.isInteger(program)) return;
-    const channel = Number.isInteger(options.channelOverride) ? options.channelOverride : synthChannel;
-    output.send([0xc0 + channel, clamp7(program)]);
+    output.send([0xc0 + (Number.isInteger(options.channelOverride) ? options.channelOverride : synthChannel), clamp7(program)]);
   }, [getOutput, synthChannel]);
 
   const sendNRPN = useCallback((msb, lsb, value, options = {}) => {
     const output = getOutput();
     if (!output) return;
-    const channel = Number.isInteger(options.channelOverride) ? options.channelOverride : synthChannel;
-    const status = 0xb0 + channel;
-    const safeValue = clamp7(value);
+    const status = 0xb0 + (Number.isInteger(options.channelOverride) ? options.channelOverride : synthChannel);
     output.send([status, 99, clamp7(msb)]);
     output.send([status, 98, clamp7(lsb)]);
-    output.send([status, 6, safeValue]);
+    output.send([status, 6, clamp7(value)]);
     output.send([status, 38, 0]);
   }, [getOutput, synthChannel]);
 
   const sendParamValue = useCallback((paramId, value, options = {}) => {
     const meta = paramsMeta[paramId];
     if (!meta) return;
-    if (Number.isInteger(meta.cc)) {
-      sendCC(meta.cc, value, options);
-      return;
-    }
-    if (Array.isArray(meta.nrpn)) {
-      sendNRPN(meta.nrpn[0], meta.nrpn[1], value, options);
-    }
+    if (Number.isInteger(meta.cc)) return sendCC(meta.cc, value, options);
+    if (Array.isArray(meta.nrpn)) sendNRPN(meta.nrpn[0], meta.nrpn[1], value, options);
   }, [paramsMeta, sendCC, sendNRPN]);
 
   const assignHardwareModSlot = useCallback((slotIndex, route) => {
     const slot = MOD_SLOT_NRPN[slotIndex];
     if (!slot) return;
-
-    const sourceValue = route ? hardwareSourceMap[route.sourceId] ?? 0 : 0;
-    const destinationValue = route ? paramsMeta[route.targetId]?.modDestination ?? 0 : 0;
-    const depthValue = route ? clamp7(route.amount) : 64;
-
-    sendNRPN(slot.source1[0], slot.source1[1], sourceValue);
+    sendNRPN(slot.source1[0], slot.source1[1], route ? hardwareSourceMap[route.sourceId] ?? 0 : 0);
     sendNRPN(slot.source2[0], slot.source2[1], 0);
-    sendNRPN(slot.depth[0], slot.depth[1], depthValue);
-    sendNRPN(slot.destination[0], slot.destination[1], destinationValue);
+    sendNRPN(slot.depth[0], slot.depth[1], route ? clamp7(route.amount) : 64);
+    sendNRPN(slot.destination[0], slot.destination[1], route ? paramsMeta[route.targetId]?.modDestination ?? 0 : 0);
   }, [hardwareSourceMap, paramsMeta, sendNRPN]);
 
   const assignHardwareMacroSlot = useCallback((slotIndex, route) => {
     const slot = MACRO_SLOT_NRPN[slotIndex];
     if (!slot) return;
-    const destinationValue = route ? paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0 : 0;
-    sendNRPN(slot.destination[0], slot.destination[1], destinationValue);
+    sendNRPN(slot.destination[0], slot.destination[1], route ? paramsMeta[route.targetId]?.macroDestination ?? paramsMeta[route.targetId]?.modDestination ?? 0 : 0);
     sendNRPN(slot.start[0], slot.start[1], route ? clamp7(route.start) : 0);
     sendNRPN(slot.end[0], slot.end[1], route ? clamp7(route.end) : 127);
     sendNRPN(slot.depth[0], slot.depth[1], route ? clamp7(route.depth) : 0);
@@ -316,8 +447,8 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     const slottedRoutes = Array.from({ length: MACRO_SLOT_NRPN.length }, () => null);
     hardwareRoutes.forEach((route) => {
       const macroIndex = macroSourceMap[route.sourceId] ?? 0;
-      const existingCount = slottedRoutes.slice(macroIndex * 4, macroIndex * 4 + 4).filter(Boolean).length;
-      const slotIndex = macroIndex * 4 + existingCount;
+      const existingCount = slottedRoutes.slice(macroIndex * MACRO_TARGETS_PER_SECTION, macroIndex * MACRO_TARGETS_PER_SECTION + MACRO_TARGETS_PER_SECTION).filter(Boolean).length;
+      const slotIndex = macroIndex * MACRO_TARGETS_PER_SECTION + existingCount;
       slottedRoutes[slotIndex] = route;
     });
 
@@ -328,23 +459,15 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     Object.entries(params).forEach(([paramId, value]) => sendParamValue(paramId, value));
   }, [sendParamValue]);
 
-  const invalidateRouteSync = useCallback(() => {
-    syncedRouteSignatureRef.current = '';
-  }, []);
-
-  const invalidateMacroRouteSync = useCallback(() => {
-    syncedMacroRouteSignatureRef.current = '';
-  }, []);
+  const invalidateRouteSync = useCallback(() => { syncedRouteSignatureRef.current = ''; }, []);
+  const invalidateMacroRouteSync = useCallback(() => { syncedMacroRouteSignatureRef.current = ''; }, []);
 
   const playNote = useCallback((note = 60, velocity = 110, durationMs = 120) => {
     const output = getOutput();
     if (!output) return;
     const safeNote = clamp7(note);
-    const safeVelocity = clamp7(velocity);
-    output.send([0x90 + synthChannel, safeNote, safeVelocity]);
-    window.setTimeout(() => {
-      output.send([0x80 + synthChannel, safeNote, 0]);
-    }, Math.max(20, durationMs));
+    output.send([0x90 + synthChannel, safeNote, clamp7(velocity)]);
+    window.setTimeout(() => output.send([0x80 + synthChannel, safeNote, 0]), Math.max(20, durationMs));
   }, [getOutput, synthChannel]);
 
   const playPreviewNote = useCallback((isOn) => {
@@ -357,10 +480,8 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
     const output = getOutput();
     if (!output) return Promise.reject(new Error('No MIDI output selected.'));
     
-    if (pendingPatchDumpRef.current) {
-      if (pendingPatchDumpRef.current.timeoutId) {
-        window.clearTimeout(pendingPatchDumpRef.current.timeoutId);
-      }
+    if (pendingPatchDumpRef.current && pendingPatchDumpRef.current.timeoutId) {
+      window.clearTimeout(pendingPatchDumpRef.current.timeoutId);
       pendingPatchDumpRef.current = null;
     }
 
@@ -374,35 +495,24 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
 
       pendingPatchDumpRef.current = { resolve, reject, timeoutId };
 
-      if (Number.isInteger(program)) {
-        output.send([0xc0 + synthChannel, clamp7(program)]);
-      }
-      
-      const sysex = [0xf0, ...NOVATION_SYSEX_HEADER, 0x40, synthChannel, 0xf7];
-      window.setTimeout(() => output.send(sysex), 120);
+      if (Number.isInteger(program)) output.send([0xc0 + synthChannel, clamp7(program)]);
+      window.setTimeout(() => output.send([0xf0, ...NOVATION_SYSEX_HEADER, 0x40, synthChannel, 0xf7]), 120);
     });
   }, [getOutput, synthChannel]);
 
-  const sendPatchToHardware = useCallback(({ params = {}, routes = [], macroRoutes = [], patchName = '', program = null, basePayload = null } = {}) => {
+  const sendPatchToHardware = useCallback(({ params = {}, routes = [], macroRoutes = [], patchName = '', program = null, basePayload = null, preservedHardwareRoutes = [], preservedHardwareMacroRoutes = [], patchCategory = null, patchGenre = null } = {}) => {
     const output = getOutput();
     if (!output) return Promise.reject(new Error('No MIDI output selected.'));
 
     return new Promise((resolve) => {
-      const payload = buildPatchPayload({
-        params,
-        routes,
-        macroRoutes,
-        patchName,
-        paramsMeta,
-        hardwareSourceMap,
-        macroSourceMap,
-        basePayload
-      });
-
       const sendPayload = () => {
-        const sysex = [0xf0, ...NOVATION_SYSEX_HEADER, 0x00, synthChannel, ...payload.map(clamp7), 0xf7];
+        const command = Number.isInteger(program) ? 0x01 : 0x00;
+        const location = Number.isInteger(program) ? program : synthChannel;
+        const sysex = buildPatchSysexMessage({
+          params, routes, macroRoutes, patchName, paramsMeta, hardwareSourceMap, macroSourceMap, basePayload, preservedHardwareRoutes, preservedHardwareMacroRoutes, patchCategory, patchGenre, command, location,
+        });
         output.send(sysex);
-        resolve({ ok: true, bytes: payload.length, program });
+        resolve({ ok: true, bytes: sysex.length, program });
       };
 
       if (Number.isInteger(program)) {
@@ -415,28 +525,9 @@ export function useMidiEngine({ synthChannel, paramsMeta, modSources, macroSourc
   }, [getOutput, synthChannel, paramsMeta, hardwareSourceMap, macroSourceMap]);
 
   return {
-    outputs,
-    inputs,
-    selectedOutputId,
-    setSelectedOutputId,
-    selectedInputId,
-    setSelectedInputId,
-    sendCC,
-    sendNRPN,
-    sendParamValue,
-    sendProgramChange,
-    assignHardwareModSlot,
-    assignHardwareMacroSlot,
-    syncHardwareModMatrix,
-    syncHardwareMacroMatrix,
-    pushAllParams,
-    invalidateRouteSync,
-    invalidateMacroRouteSync,
-    playPreviewNote,
-    playNote,
-    requestCurrentPatchDump,
-    sendPatchToHardware,
-    midiAvailable: Boolean(midiAccess),
-    error,
+    outputs, inputs, selectedOutputId, setSelectedOutputId, selectedInputId, setSelectedInputId,
+    sendCC, sendNRPN, sendParamValue, sendProgramChange, assignHardwareModSlot, assignHardwareMacroSlot,
+    syncHardwareModMatrix, syncHardwareMacroMatrix, pushAllParams, invalidateRouteSync, invalidateMacroRouteSync,
+    playPreviewNote, playNote, requestCurrentPatchDump, sendPatchToHardware, midiAvailable: Boolean(midiAccess), error,
   };
 }
