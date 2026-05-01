@@ -363,90 +363,114 @@ export const DEFAULT_PROJECTS = [
   { id: 'project-1', name: 'Warehouse Set', bpm: 128, activePatchId: 'factory-1', sequence: DEFAULT_SEQUENCE, routes: DEFAULT_ROUTES, macroRoutes: STANDARD_MACROS },
 ];
 
-// Version bumped to v10 to force the browser to clear the cache and load the new arrays!
-export const PATCH_STORAGE_KEY = 'circuit-companion-patches-v14';
-export const PROJECT_STORAGE_KEY = 'circuit-companion-projects-v14';
+// Version bumped to v15 to force the browser to clear the cache and load the new arrays!
+export const PATCH_STORAGE_KEY = 'circuit-companion-patches-v15';
+export const PROJECT_STORAGE_KEY = 'circuit-companion-projects-v15';
 
-// EXACT MAP FROM THE CSV YOU FOUND (Matches the exact byte addresses!)
+// Circuit Tracks single-patch payload layout from the official programmer reference.
+export const PATCH_DATA_LENGTH = 340;
+export const PATCH_NAME_RANGE = [0, 16];
+export const PATCH_CATEGORY_INDEX = 16;
+export const PATCH_GENRE_INDEX = 17;
+export const MOD_MATRIX_OFFSET = 124;
+export const MOD_MATRIX_SLOTS = 20;
+export const MOD_MATRIX_STRIDE = 4;
+export const MACRO_SECTION_OFFSET = 204;
+export const MACRO_SECTION_COUNT = 8;
+export const MACRO_SECTION_STRIDE = 17;
+export const MACRO_TARGETS_PER_SECTION = 4;
+export const MACRO_TARGET_STRIDE = 4;
+
 export const PATCH_BYTE_MAP = {
-  voice_mode: 24,
-  portamento: 25,
-  pre_glide: 26,
-  keyboard_octave: 27,
-  
-  osc1_wave: 28,
-  osc1_interpolate: 29,
-  osc1_index: 30,
-  osc1_vsync: 31,
-  osc1_density: 32,
-  osc1_detune: 33, 
-  osc1_semitones: 34,
-  osc1_cents: 35,
-  osc1_pitchbend: 36,
-  
-  osc2_wave: 37,
-  osc2_interpolate: 38,
-  osc2_index: 39,
-  osc2_vsync: 40,
-  osc2_density: 41,
-  osc2_detune: 42,
-  osc2_semitones: 43,
-  osc2_cents: 44,
-  osc2_pitchbend: 45,
-  
-  mix_osc1: 46,
-  mix_osc2: 47,
-  mix_ring: 48,
-  mix_noise: 49,
-  mix_pre_fx: 50,
-  mix_post_fx: 51,
-  mix_pan: 52,
-  
-  filter_drive: 53,
-  filter_drive_type: 54,
-  filter_type: 55,
-  filter_cutoff: 56,
-  filter_tracking: 57,
-  filter_resonance: 58,
-  filter_q: 59,
-  filter_env_amount: 60,
-  
-  amp_velocity: 61,
-  amp_attack: 62,
-  amp_decay: 63,
-  amp_sustain: 64,
-  amp_release: 65,
-  
-  filter_velocity: 66,
-  filter_attack: 67,
-  filter_decay: 68,
-  filter_sustain: 69,
-  filter_release: 70,
-  
-  env3_delay: 71,
-  env3_attack: 72,
-  env3_decay: 73,
-  env3_sustain: 74,
-  env3_release: 75,
-  
-  lfo1_wave: 76,
-  lfo1_phase: 77,
-  lfo1_slew: 78,
-  lfo1_delay: 79,
-  lfo1_delay_sync: 80,
-  lfo1_rate: 81,
-  lfo1_rate_sync: 82,
-  
-  lfo2_wave: 83,
-  lfo2_phase: 84,
-  lfo2_slew: 85,
-  lfo2_delay: 86,
-  lfo2_delay_sync: 87,
-  lfo2_rate: 88,
-  lfo2_rate_sync: 89,
+  voice_mode: 32,
+  portamento: 33,
+  pre_glide: 34,
+  keyboard_octave: 35,
+
+  osc1_wave: 36,
+  osc1_interpolate: 37,
+  osc1_index: 38,
+  osc1_vsync: 39,
+  osc1_density: 40,
+  osc1_detune: 41,
+  osc1_semitones: 42,
+  osc1_cents: 43,
+  osc1_pitchbend: 44,
+
+  osc2_wave: 45,
+  osc2_interpolate: 46,
+  osc2_index: 47,
+  osc2_vsync: 48,
+  osc2_density: 49,
+  osc2_detune: 50,
+  osc2_semitones: 51,
+  osc2_cents: 52,
+  osc2_pitchbend: 53,
+
+  mix_osc1: 54,
+  mix_osc2: 55,
+  mix_ring: 56,
+  mix_noise: 57,
+  mix_pre_fx: 58,
+  mix_post_fx: 59,
+  mix_pan: 60,
+
+  filter_drive: 61,
+  filter_drive_type: 62,
+  filter_type: 63,
+  filter_cutoff: 64,
+  filter_tracking: 65,
+  filter_resonance: 66,
+  filter_q: 67,
+  filter_env_amount: 68,
+
+  amp_velocity: 69,
+  amp_attack: 70,
+  amp_decay: 71,
+  amp_sustain: 72,
+  amp_release: 73,
+
+  filter_velocity: 74,
+  filter_attack: 75,
+  filter_decay: 76,
+  filter_sustain: 77,
+  filter_release: 78,
+
+  env3_delay: 79,
+  env3_attack: 80,
+  env3_decay: 81,
+  env3_sustain: 82,
+  env3_release: 83,
+
+  lfo1_wave: 84,
+  lfo1_phase: 85,
+  lfo1_slew: 86,
+  lfo1_delay: 87,
+  lfo1_delay_sync: 88,
+  lfo1_rate: 89,
+  lfo1_rate_sync: 90,
+
+  lfo2_wave: 92,
+  lfo2_phase: 93,
+  lfo2_slew: 94,
+  lfo2_delay: 95,
+  lfo2_delay_sync: 96,
+  lfo2_rate: 97,
+  lfo2_rate_sync: 98,
+
+  fx_distortion: 100,
+  fx_chorus: 102,
+
+  macro_1: 204,
+  macro_2: 221,
+  macro_3: 238,
+  macro_4: 255,
+  macro_5: 272,
+  macro_6: 289,
+  macro_7: 306,
+  macro_8: 323,
 };
 
-export const PATCH_NAME_RANGE = [332, 348];
 export const NOVATION_SYSEX_HEADER = [0x00, 0x20, 0x29, 0x01, 0x64];
 
 export function getParamMeta(id) {
